@@ -12,7 +12,6 @@ const AdminState = {
   chartType: 'doughnut',
   submissions: [],
   joinedParticipants: [],
-  kickedStudents: [],
   chartInstance: null,
   theme: localStorage.getItem('mindfocus_theme') || 'dark',
 };
@@ -102,10 +101,8 @@ function setRoomPin(pin) {
   pinDisplay.textContent = pin;
   AdminState.submissions = [];
   AdminState.joinedParticipants = [];
-  AdminState.kickedStudents = [];
   saveLocalSubmissions();
   saveJoinedParticipants();
-  localStorage.setItem(`mindfocus_kicked_${pin}`, '[]');
   subscribeToCloudRoom(pin);
   renderAll();
 }
@@ -145,9 +142,11 @@ projectorBtn.addEventListener('click', () => {
 });
 
 // ========================================================
-// 3. Cross-Device Real-Time Cloud Sync (MQTT WebSocket)
+// 3. Cross-Device Cloud Sync Engine (ntfy.sh & fallback)
 // ========================================================
-let mqttAdminClient = null;
+function getCloudTopic(pin) {
+  return `mf_room_${pin.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+}
 
 function getStorageKey() {
   return `mindfocus_room_${AdminState.currentRoomPin}`;
@@ -158,154 +157,98 @@ function getJoinedKey() {
 }
 
 function subscribeToCloudRoom(pin) {
-  const cleanPin = pin.replace(/[^a-zA-Z0-9_-]/g, '_');
-  syncIndicator.innerHTML = `<span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse inline-block mr-1"></span> Подключение к облаку...`;
+  const topic = getCloudTopic(pin);
+  syncIndicator.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse inline-block mr-1"></span> Режим: Live Cloud (Все устройства)`;
 
-  if (mqttAdminClient) {
-    try { mqttAdminClient.end(true); } catch(e) {}
-    mqttAdminClient = null;
+  // 1. Initial history fetch from cloud
+  fetchCloudHistory(topic);
+
+  // 2. Realtime Server-Sent Events (SSE) Stream
+  if (activeEventSource) {
+    activeEventSource.close();
   }
 
-  const brokers = [
-    'wss://broker.emqx.io:8084/mqtt',
-    'wss://broker.hivemq.com:8884/mqtt'
-  ];
-  let brokerIdx = 0;
-
-  function tryConnect() {
-    if (typeof mqtt === 'undefined') {
-      setTimeout(tryConnect, 500);
-      return;
-    }
-
-    const brokerUrl = brokers[brokerIdx];
-    const clientId = 'mf_host_' + Math.random().toString(16).substring(2, 10);
-
-    try {
-      const client = mqtt.connect(brokerUrl, {
-        clientId: clientId,
-        clean: true,
-        connectTimeout: 7000,
-        reconnectPeriod: 3000
-      });
-
-      client.on('connect', () => {
-        syncIndicator.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse inline-block mr-1"></span> Режим: Live Cloud (Все устройства)`;
-        client.subscribe(`mindfocus/rooms/${cleanPin}/#`, { qos: 1 });
-
-        // If host already has submissions, publish retained cohort for incoming students
-        if (AdminState.submissions.length > 0) {
-          publishAdminCohort();
+  try {
+    const sse = new EventSource(`https://ntfy.sh/${topic}/sse`);
+    sse.onmessage = (event) => {
+      try {
+        const item = JSON.parse(event.data);
+        if (item.event === 'message' && item.message) {
+          const payload = JSON.parse(item.message);
+          handleCloudMessage(payload);
         }
-      });
+      } catch(e) {}
+    };
+    activeEventSource = sse;
+  } catch(e) {}
 
-      client.on('message', (topic, messageBuffer) => {
+  // 3. Periodic fallback poll every 4 seconds
+  if (pollingInterval) clearInterval(pollingInterval);
+  pollingInterval = setInterval(() => {
+    fetchCloudHistory(topic, false);
+  }, 4000);
+}
+
+function fetchCloudHistory(topic, triggerToast = true) {
+  fetch(`https://ntfy.sh/${topic}/json?poll=1`)
+    .then(r => r.text())
+    .then(text => {
+      if (!text || !text.trim()) return;
+      const lines = text.trim().split('\n');
+      let newCount = 0;
+      lines.forEach(line => {
         try {
-          const payload = JSON.parse(messageBuffer.toString());
-          if (topic.endsWith('/cohort') && Array.isArray(payload)) {
-            let changed = false;
-            payload.forEach(sub => {
-              if (handleCloudMessage(sub, false)) changed = true;
-            });
-            if (changed) {
-              saveLocalSubmissions();
-              saveJoinedParticipants();
-              renderAll();
+          const item = JSON.parse(line);
+          if (item.event === 'message' && item.message) {
+            const payload = JSON.parse(item.message);
+            if (handleCloudMessage(payload, false)) {
+              newCount++;
             }
-          } else if (payload.type === 'REQUEST_COHORT') {
-            publishAdminCohort();
-          } else {
-            handleCloudMessage(payload, true);
           }
         } catch(e) {}
       });
-
-      client.on('error', () => {
-        client.end(true);
-        brokerIdx = (brokerIdx + 1) % brokers.length;
-        setTimeout(tryConnect, 1500);
-      });
-
-      mqttAdminClient = client;
-    } catch(e) {}
-  }
-
-  tryConnect();
-}
-
-function publishAdminCohort() {
-  if (mqttAdminClient && mqttAdminClient.connected) {
-    const cleanPin = AdminState.currentRoomPin.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const topic = `mindfocus/rooms/${cleanPin}/cohort`;
-    mqttAdminClient.publish(topic, JSON.stringify(AdminState.submissions), { qos: 1, retain: true });
-  }
-}
-
-function publishCloudEvent(event) {
-  if (mqttAdminClient && mqttAdminClient.connected) {
-    const cleanPin = AdminState.currentRoomPin.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const topic = `mindfocus/rooms/${cleanPin}/events`;
-    mqttAdminClient.publish(topic, JSON.stringify(event), { qos: 1 });
-  }
+      if (newCount > 0) {
+        saveLocalSubmissions();
+        saveJoinedParticipants();
+        renderAll();
+      }
+    })
+    .catch(() => {});
 }
 
 function handleCloudMessage(payload, doRender = true) {
   if (!payload || !payload.type) return false;
 
-  const rawName = (payload.name || '').trim();
-  const lowerName = rawName.toLowerCase();
-
-  // Handle kick event from any coordinator device
-  if (payload.type === 'KICK_STUDENT') {
-    if (lowerName && !AdminState.kickedStudents.includes(lowerName)) {
-      AdminState.kickedStudents.push(lowerName);
-      localStorage.setItem(`mindfocus_kicked_${AdminState.currentRoomPin}`, JSON.stringify(AdminState.kickedStudents));
-    }
-    AdminState.submissions = AdminState.submissions.filter(s => (s.name || '').toLowerCase() !== lowerName);
-    AdminState.joinedParticipants = AdminState.joinedParticipants.filter(p => (p.name || '').toLowerCase() !== lowerName);
-    if (doRender) {
-      saveLocalSubmissions();
-      saveJoinedParticipants();
-      renderAll();
-    }
-    return true;
-  }
-
-  // If user was kicked, block them from re-entering/submitting
-  if (AdminState.kickedStudents.includes(lowerName)) {
-    return false;
-  }
-
   let changed = false;
 
   if (payload.type === 'STUDENT_JOINED') {
-    if (!AdminState.joinedParticipants.some(p => (p.name || '').toLowerCase() === lowerName)) {
+    if (!AdminState.joinedParticipants.some(p => p.name === payload.name)) {
       AdminState.joinedParticipants.push({
-        name: rawName,
+        name: payload.name,
         status: 'answering',
         time: payload.time || ''
       });
       changed = true;
       if (doRender) {
-        showToast(`Студент подключился: ${rawName}`);
+        showToast(`Студент подключился: ${payload.name}`);
         renderAll();
       }
     }
   } else if (payload.type === 'NEW_SUBMISSION') {
     // Check if already in submissions
-    const existing = AdminState.submissions.find(s => (s.name || '').toLowerCase() === lowerName);
+    const existing = AdminState.submissions.find(s => s.name === payload.name && s.time === payload.time);
     if (!existing) {
       AdminState.submissions.unshift(payload);
       changed = true;
 
       // Update in joinedParticipants lobby
-      const joinedItem = AdminState.joinedParticipants.find(p => (p.name || '').toLowerCase() === lowerName);
+      const joinedItem = AdminState.joinedParticipants.find(p => p.name === payload.name);
       if (joinedItem) {
         joinedItem.status = 'completed';
         joinedItem.profileKey = payload.profileKey;
       } else {
         AdminState.joinedParticipants.push({
-          name: rawName,
+          name: payload.name,
           status: 'completed',
           profileKey: payload.profileKey,
           time: payload.time
@@ -313,53 +256,14 @@ function handleCloudMessage(payload, doRender = true) {
       }
 
       if (doRender) {
-        showToast(`Сдал тест: ${rawName} (${ARCHETYPE_META[payload.profileKey]?.title || 'Смешанный'})`);
+        showToast(`Сдал тест: ${payload.name} (${ARCHETYPE_META[payload.profileKey]?.title || 'Смешанный'})`);
         renderAll();
-        publishAdminCohort();
       }
     }
   }
 
   return changed;
 }
-
-window.kickStudent = function(rawName) {
-  const studentName = decodeURIComponent(rawName);
-  if (!confirm(`Вы действительно хотите удалить участника "${studentName}" из этой сессии?`)) {
-    return;
-  }
-
-  const lowerName = studentName.toLowerCase();
-  if (!AdminState.kickedStudents.includes(lowerName)) {
-    AdminState.kickedStudents.push(lowerName);
-    localStorage.setItem(`mindfocus_kicked_${AdminState.currentRoomPin}`, JSON.stringify(AdminState.kickedStudents));
-  }
-
-  AdminState.submissions = AdminState.submissions.filter(s => (s.name || '').toLowerCase() !== lowerName);
-  AdminState.joinedParticipants = AdminState.joinedParticipants.filter(p => (p.name || '').toLowerCase() !== lowerName);
-
-  saveLocalSubmissions();
-  saveJoinedParticipants();
-  renderAll();
-
-  const kickEvent = {
-    type: 'KICK_STUDENT',
-    name: studentName,
-    room: AdminState.currentRoomPin,
-    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  };
-
-  // 1. BroadcastChannel (same browser profiles)
-  if (roomChannel) {
-    try { roomChannel.postMessage(kickEvent); } catch(e) {}
-  }
-
-  // 2. Real-Time MQTT WebSocket Broadcast to all student devices
-  publishCloudEvent(kickEvent);
-  publishAdminCohort();
-
-  showToast(`Участник "${studentName}" удален из сессии`);
-};
 
 function loadLocalSubmissions() {
   const raw = localStorage.getItem(getStorageKey());
@@ -374,13 +278,6 @@ function loadLocalSubmissions() {
     try { AdminState.joinedParticipants = JSON.parse(rawJoined) || []; } catch(e) { AdminState.joinedParticipants = []; }
   } else {
     AdminState.joinedParticipants = [];
-  }
-
-  const rawKicked = localStorage.getItem(`mindfocus_kicked_${AdminState.currentRoomPin}`);
-  if (rawKicked) {
-    try { AdminState.kickedStudents = JSON.parse(rawKicked) || []; } catch(e) { AdminState.kickedStudents = []; }
-  } else {
-    AdminState.kickedStudents = [];
   }
 }
 
@@ -568,7 +465,6 @@ function renderAll() {
   } else {
     const displayList = joined.length > 0 ? joined : list;
     lobbyChips.innerHTML = displayList.map(p => {
-      const encName = encodeURIComponent(p.name);
       if (p.status === 'completed' || p.profileKey) {
         const meta = ARCHETYPE_META[p.profileKey] || ARCHETYPE_META.mixed;
         return `
@@ -576,9 +472,6 @@ function renderAll() {
             <span class="w-2 h-2 rounded-full" style="background-color: ${meta.color}"></span>
             <span class="font-bold">${p.name}</span>
             <span class="text-[10px] text-slate-400">(${meta.title})</span>
-            <button type="button" onclick="kickStudent('${encName}')" title="Удалить из сессии" class="ml-1 text-slate-400 hover:text-rose-400 p-0.5 rounded transition-colors inline-flex items-center justify-center">
-              <i data-lucide="x" class="w-3 h-3"></i>
-            </button>
           </div>
         `;
       } else {
@@ -587,9 +480,6 @@ function renderAll() {
             <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
             <span class="font-bold">${p.name}</span>
             <span class="text-[10px] text-amber-400/80">(проходит...)</span>
-            <button type="button" onclick="kickStudent('${encName}')" title="Удалить из сессии" class="ml-1 text-amber-400/70 hover:text-rose-400 p-0.5 rounded transition-colors inline-flex items-center justify-center">
-              <i data-lucide="x" class="w-3 h-3"></i>
-            </button>
           </div>
         `;
       }
@@ -658,7 +548,7 @@ function renderStudentsTable() {
   if (filtered.length === 0) {
     studentsTbody.innerHTML = `
       <tr>
-        <td colspan="10" class="py-10 text-center text-slate-400 italic">
+        <td colspan="9" class="py-10 text-center text-slate-400 italic">
           Пока никто не сдал тест в этой сессии.<br>
           <span class="text-xs text-indigo-400 mt-1 inline-block">Отправьте студентам код <strong>${AdminState.currentRoomPin}</strong></span>
         </td>
@@ -669,7 +559,6 @@ function renderStudentsTable() {
 
   studentsTbody.innerHTML = filtered.map((s, idx) => {
     const meta = ARCHETYPE_META[s.profileKey] || ARCHETYPE_META.mixed;
-    const encName = encodeURIComponent(s.name);
     return `
       <tr class="hover:bg-slate-800/30 transition-colors">
         <td class="py-3 px-4 font-mono text-slate-400 font-bold">${idx + 1}</td>
@@ -685,14 +574,7 @@ function renderStudentsTable() {
         <td class="py-3 px-4 font-mono">${s.autopilot || '—'} / 18</td>
         <td class="py-3 px-4 font-mono">${s.willpower || '—'} / 5</td>
         <td class="py-3 px-4 text-slate-400 text-[11px] max-w-xs truncate">${s.trigger || '—'}</td>
-        <td class="py-3 px-4 font-mono text-slate-400 text-[11px]">${s.time || '—'}</td>
-        <td class="py-3 px-4 text-center">
-          <button type="button" onclick="kickStudent('${encName}')" title="Удалить из сессии"
-            class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 text-xs font-semibold border border-rose-500/30 transition-all hover:scale-105 active:scale-95">
-            <i data-lucide="user-x" class="w-3.5 h-3.5"></i>
-            <span>Выгнать</span>
-          </button>
-        </td>
+        <td class="py-3 px-4 text-right font-mono text-slate-400 text-[11px]">${s.time || '—'}</td>
       </tr>
     `;
   }).join('');
@@ -705,10 +587,8 @@ clearSessionBtn.addEventListener('click', () => {
   if (confirm(`Вы уверены, что хотите очистить результаты сессии ${AdminState.currentRoomPin}?`)) {
     AdminState.submissions = [];
     AdminState.joinedParticipants = [];
-    AdminState.kickedStudents = [];
     saveLocalSubmissions();
     saveJoinedParticipants();
-    localStorage.removeItem(`mindfocus_kicked_${AdminState.currentRoomPin}`);
     renderAll();
     showToast('Результаты сессии очищены');
   }

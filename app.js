@@ -110,14 +110,6 @@ document.addEventListener('pointerdown', () => {
 
 // BroadcastChannel for cross-tab realtime sync with Admin Dashboard
 const roomChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('mindfocus_room_sync') : null;
-if (roomChannel) {
-  roomChannel.onmessage = (event) => {
-    if (!event.data || (event.data.room && state.roomPin && event.data.room !== state.roomPin)) return;
-    if (typeof handleStudentCloudEvent === 'function') {
-      handleStudentCloudEvent(event.data);
-    }
-  };
-}
 
 // ========================================================
 // 2. Quiz Questions Dataset
@@ -493,25 +485,17 @@ function startQuiz() {
   // Broadcast that student joined the room (for host lobby)
   broadcastStudentJoin();
 
-  if (state.roomPin) {
-    startStudentCloudSync(state.roomPin);
-  }
-
   startTimer();
   renderQuestion(state.currentQuestionIndex);
 }
 
 function sendCloudEvent(roomPin, data) {
-  const cleanPin = (roomPin || state.roomPin || '582-104').replace(/[^a-zA-Z0-9_-]/g, '_');
-  if (studentMqttClient && studentMqttClient.connected) {
-    studentMqttClient.publish(`mindfocus/rooms/${cleanPin}/events`, JSON.stringify(data), { qos: 1 });
-  } else {
-    setTimeout(() => {
-      if (studentMqttClient && studentMqttClient.connected) {
-        studentMqttClient.publish(`mindfocus/rooms/${cleanPin}/events`, JSON.stringify(data), { qos: 1 });
-      }
-    }, 800);
-  }
+  const topic = `mf_room_${roomPin.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+  fetch(`https://ntfy.sh/${topic}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify(data)
+  }).catch(() => {});
 }
 
 function broadcastStudentJoin() {
@@ -790,12 +774,6 @@ function submitStudentResult(results) {
     localStorage.setItem(key, JSON.stringify(list));
   }
 
-  // 4. Publish full cohort to retained topic so all other students immediately get it
-  if (studentMqttClient && studentMqttClient.connected) {
-    const cleanPin = (state.roomPin || '582-104').replace(/[^a-zA-Z0-9_-]/g, '_');
-    studentMqttClient.publish(`mindfocus/rooms/${cleanPin}/cohort`, JSON.stringify(list), { qos: 1, retain: true });
-  }
-
   // 4. Cloud Firebase sync if URL exists
   const fbUrl = localStorage.getItem('mindfocus_firebase_url');
   if (fbUrl) {
@@ -811,7 +789,6 @@ function submitStudentResult(results) {
 // 9. Render Final Screen (Diagnosis + Group Analytics)
 // ========================================================
 function finishQuiz() {
-  state.isFinished = true;
   stopTimer();
   timerContainer.classList.add('hidden');
   quizScreen.classList.add('hidden');
@@ -823,25 +800,6 @@ function finishQuiz() {
   const results = calculateResults();
   submitStudentResult(results);
 
-  // Save session state to localStorage AND sessionStorage so page refresh does not lose results
-  try {
-    const saved = {
-      isFinished: true,
-      studentName: state.studentName,
-      roomPin: state.roomPin,
-      answers: state.answers,
-      results: results,
-      savedAt: Date.now()
-    };
-    localStorage.setItem('mindfocus_active_result', JSON.stringify(saved));
-    sessionStorage.setItem('mindfocus_active_result', JSON.stringify(saved));
-  } catch(e) {}
-
-  renderResultContent(results);
-  startStudentCloudSync(state.roomPin);
-}
-
-function renderResultContent(results) {
   const profile = results.profile;
   const m = results.metrics;
   const insights = results.personalInsights;
@@ -1007,7 +965,7 @@ function renderResultContent(results) {
           <span>Твои индивидуальные триггеры и привычки:</span>
         </div>
 
-        <div class="grid grid-cols-1 sm:grid-2 gap-3.5">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
           <div class="p-4 rounded-2xl bg-slate-800/30 border border-slate-700/40">
             <div class="text-[11px] font-bold text-slate-400 uppercase tracking-wide mb-1">Главный триггер входа (Вопрос 1)</div>
             <div class="text-xs font-medium text-slate-200">«${insights.q1}»</div>
@@ -1056,6 +1014,7 @@ function renderResultContent(results) {
 
   lucide.createIcons();
   renderStudentGroupChart();
+  syncCloudSubmissionsForStudent(state.roomPin);
 
   // Attach event listeners
   document.getElementById('native-share-btn').addEventListener('click', () => {
@@ -1076,144 +1035,35 @@ function renderResultContent(results) {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-// ========================================================
-// Realtime Live Cloud Sync for Students (MQTT WebSocket)
-// ========================================================
-let studentMqttClient = null;
-
-function handleStudentCloudEvent(payload) {
-  if (!payload || !payload.type) return;
-
-  const currentRoom = state.roomPin || payload.room || '582-104';
-  const key = `mindfocus_room_${currentRoom}`;
-  let list = [];
-  try { list = JSON.parse(localStorage.getItem(key)) || []; } catch(e) { list = []; }
-
-  if (payload.type === 'KICK_STUDENT') {
-    const kickedName = (payload.name || '').trim().toLowerCase();
-    const myName = (state.studentName || '').trim().toLowerCase();
-
-    // If this student was kicked by the host
-    if (myName && kickedName === myName) {
-      stopStudentCloudSync();
-      localStorage.removeItem('mindfocus_active_result');
-      sessionStorage.removeItem('mindfocus_active_result');
-      alert('Вы были удалены из этой сессии владельцем.');
-      retakeQuiz();
-      return;
-    }
-
-    // If another student was kicked: remove from local cohort and re-render chart
-    const lenBefore = list.length;
-    list = list.filter(s => (s.name || '').toLowerCase() !== kickedName);
-    if (list.length !== lenBefore) {
-      localStorage.setItem(key, JSON.stringify(list));
-      if (state.isFinished) {
-        renderStudentGroupChart();
-      }
-    }
-    return;
-  }
-
-  if (payload.type === 'NEW_SUBMISSION') {
-    const normName = (payload.name || '').toLowerCase();
-    const existingIdx = list.findIndex(s => (s.name || '').toLowerCase() === normName);
-
-    if (existingIdx === -1) {
-      list.unshift(payload);
-      localStorage.setItem(key, JSON.stringify(list));
-      if (state.isFinished) {
-        renderStudentGroupChart();
-      }
-    }
-  }
-}
-
-function startStudentCloudSync(roomPin) {
-  const cleanPin = (roomPin || state.roomPin || '582-104').replace(/[^a-zA-Z0-9_-]/g, '_');
-
-  if (studentMqttClient) {
-    try { studentMqttClient.end(true); } catch(e) {}
-    studentMqttClient = null;
-  }
-
-  const brokers = [
-    'wss://broker.emqx.io:8084/mqtt',
-    'wss://broker.hivemq.com:8884/mqtt'
-  ];
-  let brokerIdx = 0;
-
-  function tryConnect() {
-    if (typeof mqtt === 'undefined') {
-      setTimeout(tryConnect, 500);
-      return;
-    }
-
-    const brokerUrl = brokers[brokerIdx];
-    const clientId = 'mf_stu_' + Math.random().toString(16).substring(2, 10);
-
-    try {
-      const client = mqtt.connect(brokerUrl, {
-        clientId: clientId,
-        clean: true,
-        connectTimeout: 7000,
-        reconnectPeriod: 3000
-      });
-
-      client.on('connect', () => {
-        client.subscribe(`mindfocus/rooms/${cleanPin}/#`, { qos: 1 });
-        // Ask for full cohort if on results screen
-        if (state.isFinished) {
-          client.publish(`mindfocus/rooms/${cleanPin}/events`, JSON.stringify({ type: 'REQUEST_COHORT', room: state.roomPin }), { qos: 1 });
-        }
-      });
-
-      client.on('message', (topic, messageBuffer) => {
+function syncCloudSubmissionsForStudent(roomPin) {
+  const topic = `mf_room_${roomPin.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+  fetch(`https://ntfy.sh/${topic}/json?poll=1`)
+    .then(r => r.text())
+    .then(text => {
+      if (!text || !text.trim()) return;
+      const lines = text.trim().split('\n');
+      const key = `mindfocus_room_${roomPin}`;
+      let list = [];
+      try { list = JSON.parse(localStorage.getItem(key)) || []; } catch(e) { list = []; }
+      let updated = false;
+      lines.forEach(line => {
         try {
-          const payload = JSON.parse(messageBuffer.toString());
-          if (topic.endsWith('/cohort') && Array.isArray(payload)) {
-            const key = `mindfocus_room_${state.roomPin || '582-104'}`;
-            let list = [];
-            try { list = JSON.parse(localStorage.getItem(key)) || []; } catch(e) { list = []; }
-            let changed = false;
-
-            payload.forEach(item => {
-              if (item && item.name && !list.some(s => s.name.toLowerCase() === item.name.toLowerCase())) {
-                list.push(item);
-                changed = true;
-              }
-            });
-
-            if (changed) {
-              localStorage.setItem(key, JSON.stringify(list));
-              if (state.isFinished) {
-                renderStudentGroupChart();
-              }
+          const item = JSON.parse(line);
+          if (item.event === 'message' && item.message) {
+            const d = JSON.parse(item.message);
+            if (d.type === 'NEW_SUBMISSION' && !list.some(s => s.name === d.name && s.time === d.time)) {
+              list.unshift(d);
+              updated = true;
             }
-          } else {
-            handleStudentCloudEvent(payload);
           }
         } catch(e) {}
       });
-
-      client.on('error', () => {
-        client.end(true);
-        brokerIdx = (brokerIdx + 1) % brokers.length;
-        setTimeout(tryConnect, 1500);
-      });
-
-      studentMqttClient = client;
-    } catch(e) {}
-  }
-
-  tryConnect();
-}
-
-function stopStudentCloudSync() {
-  if (studentMqttClient) {
-    try { studentMqttClient.end(true); } catch(e) {}
-    studentMqttClient = null;
-  }
+      if (updated) {
+        localStorage.setItem(key, JSON.stringify(list));
+        renderStudentGroupChart();
+      }
+    })
+    .catch(() => {});
 }
 
 // ========================================================
@@ -1239,22 +1089,6 @@ function renderStudentGroupChart() {
     list = JSON.parse(localStorage.getItem(key)) || [];
   } catch(e) {
     list = [];
-  }
-
-  // Ensure current user's result is included in cohort list
-  const currentInList = list.some(s => (s.name || '').toLowerCase() === (state.studentName || '').toLowerCase());
-  if (!currentInList && state.studentName) {
-    try {
-      const res = calculateResults();
-      list.push({
-        name: state.studentName,
-        profileKey: res.dominantKey,
-        fomo: res.metrics.radar.sum,
-        impulse: res.metrics.brake.sum,
-        autopilot: res.metrics.autopilot.sum,
-        willpower: res.personalInsights.willpowerScore
-      });
-    } catch(e) {}
   }
 
   // If no submissions in room yet, show only current user's result
@@ -1482,15 +1316,10 @@ function showToast(message) {
 }
 
 function retakeQuiz() {
-  localStorage.removeItem('mindfocus_active_result');
-  sessionStorage.removeItem('mindfocus_active_result');
-  stopStudentCloudSync();
   resultScreen.classList.add('hidden');
-  quizScreen.classList.add('hidden');
   welcomeScreen.classList.remove('hidden');
   state.currentQuestionIndex = 0;
   state.answers = {};
-  state.isFinished = false;
   stopTimer();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -1513,36 +1342,5 @@ document.addEventListener('DOMContentLoaded', () => {
     soundIcon.setAttribute('data-lucide', sound.enabled ? 'volume-2' : 'volume-x');
     soundIcon.className = sound.enabled ? 'w-4 h-4 text-slate-300' : 'w-4 h-4 text-rose-400';
   }
-
-  // Restore completed quiz session if user refreshed the page (checks both localStorage and sessionStorage)
-  const savedSessionRaw = localStorage.getItem('mindfocus_active_result') || sessionStorage.getItem('mindfocus_active_result');
-  if (savedSessionRaw) {
-    try {
-      const saved = JSON.parse(savedSessionRaw);
-      if (saved && saved.isFinished && saved.results) {
-        state.isFinished = true;
-        state.studentName = saved.studentName || '';
-        state.roomPin = saved.roomPin || '';
-        state.answers = saved.answers || {};
-
-        welcomeScreen.classList.add('hidden');
-        quizScreen.classList.add('hidden');
-        timerContainer.classList.add('hidden');
-        resultScreen.classList.remove('hidden');
-
-        if (state.roomPin) {
-          headerRoomBadge.classList.remove('hidden');
-          headerRoomBadge.classList.add('flex');
-          headerRoomText.textContent = `Комната: ${state.roomPin}`;
-        }
-
-        renderResultContent(saved.results);
-        startStudentCloudSync(state.roomPin);
-        lucide.createIcons();
-        return;
-      }
-    } catch(e) {}
-  }
-
   lucide.createIcons();
 });
