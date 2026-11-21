@@ -1,6 +1,7 @@
 /**
  * MindFocus Admin & Host Dashboard
  * Manages room sessions, participant real-time results, Chart.js analytics & export
+ * Pure real-time: NO fake demo students, real participants appear as they join!
  */
 
 const AdminState = {
@@ -10,9 +11,19 @@ const AdminState = {
   currentRoomPin: localStorage.getItem('mindfocus_current_room') || '582-104',
   chartType: 'doughnut',
   submissions: [],
+  joinedParticipants: [], // Real-time lobby of currently connected students
   chartInstance: null,
   theme: localStorage.getItem('mindfocus_theme') || 'dark',
 };
+
+// Clean up any legacy demo data from previous sessions
+(function cleanLegacyDemo() {
+  const pin = AdminState.currentRoomPin;
+  const raw = localStorage.getItem(`mindfocus_room_${pin}`);
+  if (raw && (raw.includes('Алихан Н.') || raw.includes('Диана С.'))) {
+    localStorage.removeItem(`mindfocus_room_${pin}`);
+  }
+})();
 
 // BroadcastChannel for instant local cross-tab sync
 const roomChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('mindfocus_room_sync') : null;
@@ -106,7 +117,7 @@ copyJoinBtn.addEventListener('click', () => {
   const joinUrl = `${baseUrl}index.html?pin=${AdminState.currentRoomPin}`;
   if (navigator.clipboard) {
     navigator.clipboard.writeText(joinUrl).then(() => {
-      showToast('Ссылка на подключение скопирована!');
+      showToast('Ссылка на подключение скопирована в буфер обмена!');
     });
   } else {
     showToast(`Ссылка: ${joinUrl}`);
@@ -124,14 +135,17 @@ projectorBtn.addEventListener('click', () => {
 });
 
 // ========================================================
-// 3. Submissions & Sync Engine
+// 3. Submissions & Realtime Sync Engine (NO FAKE DATA)
 // ========================================================
 function getStorageKey() {
   return `mindfocus_room_${AdminState.currentRoomPin}`;
 }
 
+function getJoinedKey() {
+  return `mindfocus_joined_${AdminState.currentRoomPin}`;
+}
+
 function loadSubmissions() {
-  // Try cloud Firebase first if configured
   if (AdminState.firebaseUrl) {
     syncIndicator.textContent = 'Режим: Firebase Realtime';
     fetch(`${AdminState.firebaseUrl.replace(/\/$/, '')}/rooms/${AdminState.currentRoomPin}/submissions.json`)
@@ -156,17 +170,28 @@ function loadSubmissions() {
 }
 
 function loadLocalSubmissions() {
+  // Load finished submissions (starts empty, only real students!)
   const raw = localStorage.getItem(getStorageKey());
   if (raw) {
     try {
-      AdminState.submissions = JSON.parse(raw);
+      AdminState.submissions = JSON.parse(raw) || [];
     } catch (e) {
       AdminState.submissions = [];
     }
   } else {
-    // Populate demo university cohort for immediate demonstration
-    AdminState.submissions = generateDemoCohort();
-    saveLocalSubmissions();
+    AdminState.submissions = [];
+  }
+
+  // Load connected participants in lobby
+  const rawJoined = localStorage.getItem(getJoinedKey());
+  if (rawJoined) {
+    try {
+      AdminState.joinedParticipants = JSON.parse(rawJoined) || [];
+    } catch(e) {
+      AdminState.joinedParticipants = [];
+    }
+  } else {
+    AdminState.joinedParticipants = [];
   }
 }
 
@@ -174,34 +199,50 @@ function saveLocalSubmissions() {
   localStorage.setItem(getStorageKey(), JSON.stringify(AdminState.submissions));
 }
 
-function generateDemoCohort() {
-  return [
-    { name: 'Алихан Н.', profileKey: 'brake', fomo: 8, impulse: 13, autopilot: 10, willpower: 2, trigger: 'Учёба / работа', time: '10:14' },
-    { name: 'Диана С.', profileKey: 'radar', fomo: 14, impulse: 7, autopilot: 8, willpower: 3, trigger: 'Ожидание транспорта', time: '10:16' },
-    { name: 'Руслан К.', profileKey: 'autopilot', fomo: 6, impulse: 9, autopilot: 16, willpower: 3, trigger: 'Расслабиться перед сном', time: '10:17' },
-    { name: 'Мадина А.', profileKey: 'brake', fomo: 9, impulse: 14, autopilot: 11, willpower: 1, trigger: 'Застрять на задаче', time: '10:19' },
-    { name: 'Ернар Б.', profileKey: 'mixed', fomo: 8, impulse: 8, autopilot: 9, willpower: 4, trigger: 'Учёба / работа', time: '10:21' },
-    { name: 'Айгерим Т.', profileKey: 'radar', fomo: 13, impulse: 8, autopilot: 7, willpower: 3, trigger: 'Застрять на задаче', time: '10:22' },
-    { name: 'Тимур В.', profileKey: 'autopilot', fomo: 7, impulse: 9, autopilot: 15, willpower: 2, trigger: 'Расслабиться перед сном', time: '10:25' },
-    { name: 'София Л.', profileKey: 'brake', fomo: 10, impulse: 13, autopilot: 9, willpower: 2, trigger: 'Учёба / работа', time: '10:26' },
-  ];
+function saveJoinedParticipants() {
+  localStorage.setItem(getJoinedKey(), JSON.stringify(AdminState.joinedParticipants));
 }
 
-// BroadcastChannel listener for incoming submissions from students
+// BroadcastChannel listener for incoming live students
 if (roomChannel) {
   roomChannel.onmessage = (event) => {
-    if (event.data && event.data.type === 'NEW_SUBMISSION' && event.data.room === AdminState.currentRoomPin) {
-      AdminState.submissions.unshift(event.data.submission);
-      saveLocalSubmissions();
+    if (!event.data || event.data.room !== AdminState.currentRoomPin) return;
+
+    if (event.data.type === 'STUDENT_JOINED') {
+      const p = event.data.participant;
+      if (!AdminState.joinedParticipants.some(x => x.name === p.name)) {
+        AdminState.joinedParticipants.push(p);
+        saveJoinedParticipants();
+        renderAll();
+        showToast(`Студент подключился: ${p.name}`);
+      }
+    } else if (event.data.type === 'NEW_SUBMISSION') {
+      const sub = event.data.submission;
+      // Mark participant as completed in lobby
+      const existing = AdminState.joinedParticipants.find(x => x.name === sub.name);
+      if (existing) {
+        existing.status = 'completed';
+        existing.profileKey = sub.profileKey;
+      } else {
+        AdminState.joinedParticipants.push({ name: sub.name, status: 'completed', profileKey: sub.profileKey, time: sub.time });
+      }
+      saveJoinedParticipants();
+
+      // Add to finished submissions table
+      if (!AdminState.submissions.some(s => s.name === sub.name && s.time === sub.time)) {
+        AdminState.submissions.unshift(sub);
+        saveLocalSubmissions();
+      }
+
       renderAll();
-      showToast(`Новый ответ: ${event.data.submission.name} (${ARCHETYPE_META[event.data.submission.profileKey].title})`);
+      showToast(`Сдал тест: ${sub.name} (${ARCHETYPE_META[sub.profileKey]?.title || 'Смешанный'})`);
     }
   };
 }
 
 // Window storage listener
 window.addEventListener('storage', (e) => {
-  if (e.key === getStorageKey()) {
+  if (e.key === getStorageKey() || e.key === getJoinedKey()) {
     loadLocalSubmissions();
     renderAll();
   }
@@ -225,6 +266,7 @@ function renderChart() {
 
   if (AdminState.chartInstance) {
     AdminState.chartInstance.destroy();
+    AdminState.chartInstance = null;
   }
 
   const counts = { radar: 0, brake: 0, autopilot: 0, mixed: 0 };
@@ -238,10 +280,38 @@ function renderChart() {
     totalWillpower += (s.willpower || 3);
   });
 
-  const total = AdminState.submissions.length || 1;
+  const total = AdminState.submissions.length;
   const isDark = document.documentElement.classList.contains('dark');
   const textColor = isDark ? '#cbd5e1' : '#1e293b';
   const gridColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)';
+
+  // If no submissions yet, show empty placeholder donut
+  if (total === 0) {
+    AdminState.chartInstance = new Chart(ctx, {
+      type: 'doughnut',
+      data: {
+        labels: ['Ожидание подключений...'],
+        datasets: [{
+          data: [1],
+          backgroundColor: [isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)'],
+          borderWidth: 0
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            position: 'bottom',
+            labels: { color: textColor, font: { family: 'Plus Jakarta Sans', weight: '600' } }
+          },
+          tooltip: { enabled: false }
+        },
+        cutout: '68%'
+      }
+    });
+    return;
+  }
 
   if (AdminState.chartType === 'doughnut') {
     AdminState.chartInstance = new Chart(ctx, {
@@ -288,9 +358,7 @@ function renderChart() {
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        plugins: {
-          legend: { display: false }
-        },
+        plugins: { legend: { display: false } },
         scales: {
           x: { ticks: { color: textColor, font: { family: 'Plus Jakarta Sans', size: 11 } }, grid: { display: false } },
           y: { ticks: { color: textColor, stepSize: 1 }, grid: { color: gridColor }, beginAtZero: true }
@@ -313,17 +381,13 @@ function renderChart() {
           backgroundColor: 'rgba(99, 102, 241, 0.25)',
           borderColor: '#6366f1',
           pointBackgroundColor: '#818cf8',
-          pointBorderColor: '#fff',
-          pointHoverBackgroundColor: '#fff',
-          pointHoverBorderColor: '#6366f1'
+          pointBorderColor: '#fff'
         }]
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        plugins: {
-          legend: { labels: { color: textColor, font: { weight: '600' } } }
-        },
+        plugins: { legend: { labels: { color: textColor, font: { weight: '600' } } } },
         scales: {
           r: {
             angleLines: { color: gridColor },
@@ -338,22 +402,42 @@ function renderChart() {
 }
 
 // ========================================================
-// 5. Render Tables, Badges & Insights
+// 5. Render Tables, Badges & Insights (REAL DATA ONLY)
 // ========================================================
 function renderAll() {
   const list = AdminState.submissions;
-  lobbyCountText.textContent = list.length;
+  const joined = AdminState.joinedParticipants;
+
+  // Lobby counter (total joined + finished)
+  const totalLobbyCount = Math.max(list.length, joined.length);
+  lobbyCountText.textContent = totalLobbyCount;
 
   // Render Lobby Chips
-  if (list.length === 0) {
-    lobbyChips.innerHTML = `<span class="text-xs text-slate-500 italic">Ожидание первых ответов...</span>`;
+  if (joined.length === 0 && list.length === 0) {
+    lobbyChips.innerHTML = `<span class="text-xs text-slate-400 italic">Ожидание первых подключений... Отправьте код комнаты ${AdminState.currentRoomPin} студентам!</span>`;
   } else {
-    lobbyChips.innerHTML = list.map(s => `
-      <div class="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-slate-800/40 border border-slate-700/60 text-xs text-slate-200">
-        <span class="w-2 h-2 rounded-full" style="background-color: ${ARCHETYPE_META[s.profileKey]?.color || '#94a3b8'}"></span>
-        <span class="font-medium">${s.name}</span>
-      </div>
-    `).join('');
+    // Show joined students: answering or completed
+    const displayList = joined.length > 0 ? joined : list;
+    lobbyChips.innerHTML = displayList.map(p => {
+      if (p.status === 'completed' || p.profileKey) {
+        const meta = ARCHETYPE_META[p.profileKey] || ARCHETYPE_META.mixed;
+        return `
+          <div class="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-slate-800/40 border border-slate-700/60 text-xs text-slate-200">
+            <span class="w-2 h-2 rounded-full" style="background-color: ${meta.color}"></span>
+            <span class="font-bold">${p.name}</span>
+            <span class="text-[10px] text-slate-400">(${meta.title})</span>
+          </div>
+        `;
+      } else {
+        return `
+          <div class="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300">
+            <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+            <span class="font-bold">${p.name}</span>
+            <span class="text-[10px] text-amber-400/80">(проходит...)</span>
+          </div>
+        `;
+      }
+    }).join('');
   }
 
   // Count Archetypes
@@ -367,34 +451,41 @@ function renderAll() {
     totalAuto += (s.autopilot || 5);
   });
 
-  const total = list.length || 1;
+  const total = list.length;
 
   // Archetype Badges under Chart
   document.getElementById('admin-archetype-badges').innerHTML = `
     <div class="p-3 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-center">
       <div class="text-[11px] font-bold text-rose-400">Тревожный радар</div>
-      <div class="text-lg font-extrabold text-white">${counts.radar} <span class="text-xs font-normal text-rose-300">(${Math.round(counts.radar / total * 100)}%)</span></div>
+      <div class="text-lg font-extrabold text-white">${counts.radar} <span class="text-xs font-normal text-rose-300">(${total > 0 ? Math.round(counts.radar / total * 100) : 0}%)</span></div>
     </div>
     <div class="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-center">
       <div class="text-[11px] font-bold text-amber-400">Слабый тормоз</div>
-      <div class="text-lg font-extrabold text-white">${counts.brake} <span class="text-xs font-normal text-amber-300">(${Math.round(counts.brake / total * 100)}%)</span></div>
+      <div class="text-lg font-extrabold text-white">${counts.brake} <span class="text-xs font-normal text-amber-300">(${total > 0 ? Math.round(counts.brake / total * 100) : 0}%)</span></div>
     </div>
     <div class="p-3 rounded-2xl bg-yellow-500/10 border border-yellow-500/30 text-center">
       <div class="text-[11px] font-bold text-yellow-400">Автопилот</div>
-      <div class="text-lg font-extrabold text-white">${counts.autopilot} <span class="text-xs font-normal text-yellow-300">(${Math.round(counts.autopilot / total * 100)}%)</span></div>
+      <div class="text-lg font-extrabold text-white">${counts.autopilot} <span class="text-xs font-normal text-yellow-300">(${total > 0 ? Math.round(counts.autopilot / total * 100) : 0}%)</span></div>
     </div>
     <div class="p-3 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-center">
       <div class="text-[11px] font-bold text-emerald-400">Смешанный</div>
-      <div class="text-lg font-extrabold text-white">${counts.mixed} <span class="text-xs font-normal text-emerald-300">(${Math.round(counts.mixed / total * 100)}%)</span></div>
+      <div class="text-lg font-extrabold text-white">${counts.mixed} <span class="text-xs font-normal text-emerald-300">(${total > 0 ? Math.round(counts.mixed / total * 100) : 0}%)</span></div>
     </div>
   `;
 
   // Key University Insights
-  const dominant = Object.keys(counts).reduce((a, b) => counts[a] > counts[b] ? a : b);
-  document.getElementById('insight-dominant-profile').textContent = `${ARCHETYPE_META[dominant].title} (${Math.round(counts[dominant] / total * 100)}%)`;
-  document.getElementById('insight-avg-fomo').textContent = `${Math.round(totalFomo / total)} / 15 баллов`;
-  document.getElementById('insight-avg-impulse').textContent = `${Math.round(totalImp / total)} / 15 баллов`;
-  document.getElementById('insight-avg-autopilot').textContent = `${Math.round(totalAuto / total)} / 18 баллов`;
+  if (total > 0) {
+    const dominant = Object.keys(counts).reduce((a, b) => counts[a] > counts[b] ? a : b);
+    document.getElementById('insight-dominant-profile').textContent = `${ARCHETYPE_META[dominant].title} (${Math.round(counts[dominant] / total * 100)}%)`;
+    document.getElementById('insight-avg-fomo').textContent = `${Math.round(totalFomo / total)} / 15 баллов`;
+    document.getElementById('insight-avg-impulse').textContent = `${Math.round(totalImp / total)} / 15 баллов`;
+    document.getElementById('insight-avg-autopilot').textContent = `${Math.round(totalAuto / total)} / 18 баллов`;
+  } else {
+    document.getElementById('insight-dominant-profile').textContent = 'Ожидание ответов...';
+    document.getElementById('insight-avg-fomo').textContent = '—';
+    document.getElementById('insight-avg-impulse').textContent = '—';
+    document.getElementById('insight-avg-autopilot').textContent = '—';
+  }
 
   // Render Table Rows
   renderStudentsTable();
@@ -409,7 +500,14 @@ function renderStudentsTable() {
   const filtered = AdminState.submissions.filter(s => s.name.toLowerCase().includes(query));
 
   if (filtered.length === 0) {
-    studentsTbody.innerHTML = `<tr><td colspan="9" class="py-8 text-center text-slate-500">Участников не найдено</td></tr>`;
+    studentsTbody.innerHTML = `
+      <tr>
+        <td colspan="9" class="py-10 text-center text-slate-400 italic">
+          Пока никто не сдал тест в этой сессии.<br>
+          <span class="text-xs text-indigo-400 mt-1 inline-block">Отправьте студентам код <strong>${AdminState.currentRoomPin}</strong></span>
+        </td>
+      </tr>
+    `;
     return;
   }
 
@@ -442,7 +540,9 @@ searchInput.addEventListener('input', renderStudentsTable);
 clearSessionBtn.addEventListener('click', () => {
   if (confirm(`Вы уверены, что хотите очистить результаты сессии ${AdminState.currentRoomPin}?`)) {
     AdminState.submissions = [];
+    AdminState.joinedParticipants = [];
     saveLocalSubmissions();
+    saveJoinedParticipants();
     renderAll();
     showToast('Результаты сессии очищены');
   }
@@ -451,7 +551,7 @@ clearSessionBtn.addEventListener('click', () => {
 // CSV Export
 exportCsvBtn.addEventListener('click', () => {
   if (AdminState.submissions.length === 0) {
-    showToast('Нет данных для выгрузки');
+    showToast('Нет данных для выгрузки. Дождитесь ответов студентов.');
     return;
   }
 

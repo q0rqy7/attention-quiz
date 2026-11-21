@@ -10,71 +10,103 @@
 class SoundController {
   constructor() {
     this.ctx = null;
-    this.enabled = true;
+    this.enabled = localStorage.getItem('mindfocus_sound') !== 'false';
   }
 
-  init() {
-    if (!this.ctx && (window.AudioContext || window.webkitAudioContext)) {
+  ensureContext() {
+    if (!this.ctx) {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      this.ctx = new AudioCtx();
+      if (AudioCtx) this.ctx = new AudioCtx();
     }
     if (this.ctx && this.ctx.state === 'suspended') {
       this.ctx.resume();
     }
+    return this.ctx;
   }
 
   playClick() {
     if (!this.enabled) return;
     try {
-      this.init();
-      if (!this.ctx) return;
-      const osc = this.ctx.createOscillator();
-      const gain = this.ctx.createGain();
+      const ctx = this.ensureContext();
+      if (!ctx) return;
+      const t = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(600, this.ctx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(300, this.ctx.currentTime + 0.04);
-      gain.gain.setValueAtTime(0.12, this.ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.04);
+      osc.frequency.setValueAtTime(800, t);
+      osc.frequency.exponentialRampToValueAtTime(400, t + 0.08);
+
+      gain.gain.setValueAtTime(0.25, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+
       osc.connect(gain);
-      gain.connect(this.ctx.destination);
-      osc.start();
-      osc.stop(this.ctx.currentTime + 0.04);
-    } catch (e) {
-      // Audio autoplay policy fallback
-    }
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.08);
+    } catch (e) {}
+  }
+
+  playChime() {
+    if (!this.enabled) return;
+    try {
+      const ctx = this.ensureContext();
+      if (!ctx) return;
+      const t = ctx.currentTime;
+      [600, 900].forEach((freq, idx) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(freq, t + idx * 0.1);
+        gain.gain.setValueAtTime(0.2, t + idx * 0.1);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + idx * 0.1 + 0.2);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(t + idx * 0.1);
+        osc.stop(t + idx * 0.1 + 0.2);
+      });
+    } catch(e) {}
   }
 
   playSuccess() {
     if (!this.enabled) return;
     try {
-      this.init();
-      if (!this.ctx) return;
-      const notes = [523.25, 659.25, 783.99, 1046.50]; // C5, E5, G5, C6 (Celebration chord)
+      const ctx = this.ensureContext();
+      if (!ctx) return;
+      const t = ctx.currentTime;
+      const notes = [523.25, 659.25, 783.99, 1046.50]; // C5, E5, G5, C6
       notes.forEach((freq, i) => {
-        const osc = this.ctx.createOscillator();
-        const gain = this.ctx.createGain();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
         osc.type = 'triangle';
-        osc.frequency.setValueAtTime(freq, this.ctx.currentTime + i * 0.08);
-        gain.gain.setValueAtTime(0, this.ctx.currentTime + i * 0.08);
-        gain.gain.linearRampToValueAtTime(0.15, this.ctx.currentTime + i * 0.08 + 0.02);
-        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + i * 0.08 + 0.5);
+        osc.frequency.setValueAtTime(freq, t + i * 0.09);
+        gain.gain.setValueAtTime(0.2, t + i * 0.09);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + i * 0.09 + 0.6);
         osc.connect(gain);
-        gain.connect(this.ctx.destination);
-        osc.start(this.ctx.currentTime + i * 0.08);
-        osc.stop(this.ctx.currentTime + i * 0.08 + 0.5);
+        gain.connect(ctx.destination);
+        osc.start(t + i * 0.09);
+        osc.stop(t + i * 0.09 + 0.6);
       });
-    } catch (e) {
-      // ignore
-    }
+    } catch (e) {}
   }
 
   toggle() {
     this.enabled = !this.enabled;
+    localStorage.setItem('mindfocus_sound', this.enabled ? 'true' : 'false');
+    if (this.enabled) {
+      this.ensureContext();
+      this.playChime();
+    }
     return this.enabled;
   }
 }
 
 const sound = new SoundController();
+
+// Unlock Web Audio Context on first interaction
+document.addEventListener('pointerdown', () => {
+  sound.ensureContext();
+}, { once: true });
 
 // BroadcastChannel for cross-tab realtime sync with Admin Dashboard
 const roomChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('mindfocus_room_sync') : null;
@@ -355,12 +387,13 @@ themeToggleBtn.addEventListener('click', () => {
   applyTheme(newTheme);
 });
 
-soundToggleBtn.addEventListener('click', () => {
+soundToggleBtn.addEventListener('click', (e) => {
+  e.preventDefault();
   const isEnabled = sound.toggle();
   soundIcon.setAttribute('data-lucide', isEnabled ? 'volume-2' : 'volume-x');
   soundIcon.className = isEnabled ? 'w-4 h-4 text-slate-300' : 'w-4 h-4 text-rose-400';
   lucide.createIcons();
-  if (isEnabled) sound.playClick();
+  showToast(isEnabled ? '🔊 Звуковые эффекты включены' : '🔇 Звуковые эффекты выключены');
 });
 
 // Check URL query parameters for room PIN
@@ -449,8 +482,30 @@ function startQuiz() {
   headerRoomBadge.classList.add('flex');
   headerRoomText.textContent = `Комната: ${state.roomPin}`;
 
+  // Broadcast that student joined the room (for host lobby)
+  broadcastStudentJoin();
+
   startTimer();
   renderQuestion(state.currentQuestionIndex);
+}
+
+function broadcastStudentJoin() {
+  const joinData = {
+    name: state.studentName,
+    room: state.roomPin,
+    status: 'answering',
+    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  };
+  if (roomChannel) {
+    roomChannel.postMessage({ type: 'STUDENT_JOINED', room: state.roomPin, participant: joinData });
+  }
+  const joinedKey = `mindfocus_joined_${state.roomPin}`;
+  let joinedList = [];
+  try { joinedList = JSON.parse(localStorage.getItem(joinedKey)) || []; } catch(e) { joinedList = []; }
+  if (!joinedList.some(p => p.name === state.studentName)) {
+    joinedList.push(joinData);
+    localStorage.setItem(joinedKey, JSON.stringify(joinedList));
+  }
 }
 
 function renderQuestion(index) {
@@ -983,13 +1038,16 @@ function renderStudentGroupChart() {
     list = [];
   }
 
+  // If no submissions in room yet, show only current user's result
   if (list.length === 0) {
-    list = [
-      { profileKey: 'brake', fomo: 8, impulse: 13, autopilot: 10, willpower: 2 },
-      { profileKey: 'radar', fomo: 14, impulse: 7, autopilot: 8, willpower: 3 },
-      { profileKey: 'autopilot', fomo: 6, impulse: 9, autopilot: 16, willpower: 3 },
-      { profileKey: 'mixed', fomo: 8, impulse: 8, autopilot: 9, willpower: 4 }
-    ];
+    const res = calculateResults();
+    list = [{
+      profileKey: res.dominantKey,
+      fomo: res.metrics.radar.sum,
+      impulse: res.metrics.brake.sum,
+      autopilot: res.metrics.autopilot.sum,
+      willpower: res.personalInsights.willpowerScore
+    }];
   }
 
   const counts = { radar: 0, brake: 0, autopilot: 0, mixed: 0 };
@@ -1227,5 +1285,9 @@ function triggerCelebrationConfetti() {
 document.addEventListener('DOMContentLoaded', () => {
   applyTheme(state.theme);
   parseUrlRoomPin();
+  if (soundIcon) {
+    soundIcon.setAttribute('data-lucide', sound.enabled ? 'volume-2' : 'volume-x');
+    soundIcon.className = sound.enabled ? 'w-4 h-4 text-slate-300' : 'w-4 h-4 text-rose-400';
+  }
   lucide.createIcons();
 });
