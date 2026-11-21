@@ -1,7 +1,7 @@
 /**
  * MindFocus Admin & Host Dashboard
  * Manages room sessions, participant real-time results, Chart.js analytics & export
- * Pure real-time: NO fake demo students, real participants appear as they join!
+ * Pure real-time cross-device cloud sync: participants appear from ANY device!
  */
 
 const AdminState = {
@@ -11,7 +11,7 @@ const AdminState = {
   currentRoomPin: localStorage.getItem('mindfocus_current_room') || '582-104',
   chartType: 'doughnut',
   submissions: [],
-  joinedParticipants: [], // Real-time lobby of currently connected students
+  joinedParticipants: [],
   chartInstance: null,
   theme: localStorage.getItem('mindfocus_theme') || 'dark',
 };
@@ -27,6 +27,8 @@ const AdminState = {
 
 // BroadcastChannel for instant local cross-tab sync
 const roomChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('mindfocus_room_sync') : null;
+let activeEventSource = null;
+let pollingInterval = null;
 
 // DOM Elements
 const lockScreen = document.getElementById('admin-lock-screen');
@@ -84,7 +86,7 @@ loginForm.addEventListener('submit', (e) => {
     sessionStorage.setItem('mindfocus_admin_unlocked', 'true');
     checkAuth();
   } else {
-    showToast('Неверный пароль! Попробуйте 1234');
+    showToast('Неверный пароль!');
     passInput.classList.add('border-rose-500');
     setTimeout(() => passInput.classList.remove('border-rose-500'), 2000);
   }
@@ -97,7 +99,12 @@ function setRoomPin(pin) {
   AdminState.currentRoomPin = pin;
   localStorage.setItem('mindfocus_current_room', pin);
   pinDisplay.textContent = pin;
-  loadSubmissions();
+  AdminState.submissions = [];
+  AdminState.joinedParticipants = [];
+  saveLocalSubmissions();
+  saveJoinedParticipants();
+  subscribeToCloudRoom(pin);
+  renderAll();
 }
 
 function generateRandomPin() {
@@ -135,8 +142,12 @@ projectorBtn.addEventListener('click', () => {
 });
 
 // ========================================================
-// 3. Submissions & Realtime Sync Engine (NO FAKE DATA)
+// 3. Cross-Device Cloud Sync Engine (ntfy.sh & fallback)
 // ========================================================
+function getCloudTopic(pin) {
+  return `mf_room_${pin.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+}
+
 function getStorageKey() {
   return `mindfocus_room_${AdminState.currentRoomPin}`;
 }
@@ -145,51 +156,126 @@ function getJoinedKey() {
   return `mindfocus_joined_${AdminState.currentRoomPin}`;
 }
 
-function loadSubmissions() {
-  if (AdminState.firebaseUrl) {
-    syncIndicator.textContent = 'Режим: Firebase Realtime';
-    fetch(`${AdminState.firebaseUrl.replace(/\/$/, '')}/rooms/${AdminState.currentRoomPin}/submissions.json`)
-      .then(r => r.json())
-      .then(data => {
-        if (data && typeof data === 'object') {
-          AdminState.submissions = Object.values(data);
-        } else {
-          loadLocalSubmissions();
-        }
-        renderAll();
-      })
-      .catch(() => {
-        loadLocalSubmissions();
-        renderAll();
-      });
-  } else {
-    syncIndicator.textContent = 'Режим: Local & Peer Realtime';
-    loadLocalSubmissions();
-    renderAll();
+function subscribeToCloudRoom(pin) {
+  const topic = getCloudTopic(pin);
+  syncIndicator.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse inline-block mr-1"></span> Режим: Live Cloud (Все устройства)`;
+
+  // 1. Initial history fetch from cloud
+  fetchCloudHistory(topic);
+
+  // 2. Realtime Server-Sent Events (SSE) Stream
+  if (activeEventSource) {
+    activeEventSource.close();
   }
+
+  try {
+    const sse = new EventSource(`https://ntfy.sh/${topic}/sse`);
+    sse.onmessage = (event) => {
+      try {
+        const item = JSON.parse(event.data);
+        if (item.event === 'message' && item.message) {
+          const payload = JSON.parse(item.message);
+          handleCloudMessage(payload);
+        }
+      } catch(e) {}
+    };
+    activeEventSource = sse;
+  } catch(e) {}
+
+  // 3. Periodic fallback poll every 4 seconds
+  if (pollingInterval) clearInterval(pollingInterval);
+  pollingInterval = setInterval(() => {
+    fetchCloudHistory(topic, false);
+  }, 4000);
+}
+
+function fetchCloudHistory(topic, triggerToast = true) {
+  fetch(`https://ntfy.sh/${topic}/json?poll=1`)
+    .then(r => r.text())
+    .then(text => {
+      if (!text || !text.trim()) return;
+      const lines = text.trim().split('\n');
+      let newCount = 0;
+      lines.forEach(line => {
+        try {
+          const item = JSON.parse(line);
+          if (item.event === 'message' && item.message) {
+            const payload = JSON.parse(item.message);
+            if (handleCloudMessage(payload, false)) {
+              newCount++;
+            }
+          }
+        } catch(e) {}
+      });
+      if (newCount > 0) {
+        saveLocalSubmissions();
+        saveJoinedParticipants();
+        renderAll();
+      }
+    })
+    .catch(() => {});
+}
+
+function handleCloudMessage(payload, doRender = true) {
+  if (!payload || !payload.type) return false;
+
+  let changed = false;
+
+  if (payload.type === 'STUDENT_JOINED') {
+    if (!AdminState.joinedParticipants.some(p => p.name === payload.name)) {
+      AdminState.joinedParticipants.push({
+        name: payload.name,
+        status: 'answering',
+        time: payload.time || ''
+      });
+      changed = true;
+      if (doRender) {
+        showToast(`Студент подключился: ${payload.name}`);
+        renderAll();
+      }
+    }
+  } else if (payload.type === 'NEW_SUBMISSION') {
+    // Check if already in submissions
+    const existing = AdminState.submissions.find(s => s.name === payload.name && s.time === payload.time);
+    if (!existing) {
+      AdminState.submissions.unshift(payload);
+      changed = true;
+
+      // Update in joinedParticipants lobby
+      const joinedItem = AdminState.joinedParticipants.find(p => p.name === payload.name);
+      if (joinedItem) {
+        joinedItem.status = 'completed';
+        joinedItem.profileKey = payload.profileKey;
+      } else {
+        AdminState.joinedParticipants.push({
+          name: payload.name,
+          status: 'completed',
+          profileKey: payload.profileKey,
+          time: payload.time
+        });
+      }
+
+      if (doRender) {
+        showToast(`Сдал тест: ${payload.name} (${ARCHETYPE_META[payload.profileKey]?.title || 'Смешанный'})`);
+        renderAll();
+      }
+    }
+  }
+
+  return changed;
 }
 
 function loadLocalSubmissions() {
-  // Load finished submissions (starts empty, only real students!)
   const raw = localStorage.getItem(getStorageKey());
   if (raw) {
-    try {
-      AdminState.submissions = JSON.parse(raw) || [];
-    } catch (e) {
-      AdminState.submissions = [];
-    }
+    try { AdminState.submissions = JSON.parse(raw) || []; } catch (e) { AdminState.submissions = []; }
   } else {
     AdminState.submissions = [];
   }
 
-  // Load connected participants in lobby
   const rawJoined = localStorage.getItem(getJoinedKey());
   if (rawJoined) {
-    try {
-      AdminState.joinedParticipants = JSON.parse(rawJoined) || [];
-    } catch(e) {
-      AdminState.joinedParticipants = [];
-    }
+    try { AdminState.joinedParticipants = JSON.parse(rawJoined) || []; } catch(e) { AdminState.joinedParticipants = []; }
   } else {
     AdminState.joinedParticipants = [];
   }
@@ -203,50 +289,13 @@ function saveJoinedParticipants() {
   localStorage.setItem(getJoinedKey(), JSON.stringify(AdminState.joinedParticipants));
 }
 
-// BroadcastChannel listener for incoming live students
+// Local BroadcastChannel listener
 if (roomChannel) {
   roomChannel.onmessage = (event) => {
     if (!event.data || event.data.room !== AdminState.currentRoomPin) return;
-
-    if (event.data.type === 'STUDENT_JOINED') {
-      const p = event.data.participant;
-      if (!AdminState.joinedParticipants.some(x => x.name === p.name)) {
-        AdminState.joinedParticipants.push(p);
-        saveJoinedParticipants();
-        renderAll();
-        showToast(`Студент подключился: ${p.name}`);
-      }
-    } else if (event.data.type === 'NEW_SUBMISSION') {
-      const sub = event.data.submission;
-      // Mark participant as completed in lobby
-      const existing = AdminState.joinedParticipants.find(x => x.name === sub.name);
-      if (existing) {
-        existing.status = 'completed';
-        existing.profileKey = sub.profileKey;
-      } else {
-        AdminState.joinedParticipants.push({ name: sub.name, status: 'completed', profileKey: sub.profileKey, time: sub.time });
-      }
-      saveJoinedParticipants();
-
-      // Add to finished submissions table
-      if (!AdminState.submissions.some(s => s.name === sub.name && s.time === sub.time)) {
-        AdminState.submissions.unshift(sub);
-        saveLocalSubmissions();
-      }
-
-      renderAll();
-      showToast(`Сдал тест: ${sub.name} (${ARCHETYPE_META[sub.profileKey]?.title || 'Смешанный'})`);
-    }
+    handleCloudMessage(event.data, true);
   };
 }
-
-// Window storage listener
-window.addEventListener('storage', (e) => {
-  if (e.key === getStorageKey() || e.key === getJoinedKey()) {
-    loadLocalSubmissions();
-    renderAll();
-  }
-});
 
 // ========================================================
 // 4. Chart.js Controller
@@ -285,7 +334,6 @@ function renderChart() {
   const textColor = isDark ? '#cbd5e1' : '#1e293b';
   const gridColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)';
 
-  // If no submissions yet, show empty placeholder donut
   if (total === 0) {
     AdminState.chartInstance = new Chart(ctx, {
       type: 'doughnut',
@@ -402,21 +450,19 @@ function renderChart() {
 }
 
 // ========================================================
-// 5. Render Tables, Badges & Insights (REAL DATA ONLY)
+// 5. Render Tables, Badges & Insights
 // ========================================================
 function renderAll() {
   const list = AdminState.submissions;
   const joined = AdminState.joinedParticipants;
 
-  // Lobby counter (total joined + finished)
-  const totalLobbyCount = Math.max(list.length, joined.length);
-  lobbyCountText.textContent = totalLobbyCount;
+  const totalCount = Math.max(list.length, joined.length);
+  lobbyCountText.textContent = totalCount;
 
   // Render Lobby Chips
   if (joined.length === 0 && list.length === 0) {
-    lobbyChips.innerHTML = `<span class="text-xs text-slate-400 italic">Ожидание первых подключений... Отправьте код комнаты ${AdminState.currentRoomPin} студентам!</span>`;
+    lobbyChips.innerHTML = `<span class="text-xs text-slate-400 italic">Ожидание подключений... Отправьте код комнаты ${AdminState.currentRoomPin} студентам!</span>`;
   } else {
-    // Show joined students: answering or completed
     const displayList = joined.length > 0 ? joined : list;
     lobbyChips.innerHTML = displayList.map(p => {
       if (p.status === 'completed' || p.profileKey) {
@@ -497,7 +543,7 @@ function renderAll() {
 
 function renderStudentsTable() {
   const query = (searchInput.value || '').toLowerCase().trim();
-  const filtered = AdminState.submissions.filter(s => s.name.toLowerCase().includes(query));
+  const filtered = AdminState.submissions.filter(s => (s.name || '').toLowerCase().includes(query));
 
   if (filtered.length === 0) {
     studentsTbody.innerHTML = `
@@ -600,7 +646,7 @@ saveCloudSettingsBtn.addEventListener('click', () => {
 
   cloudModal.classList.add('hidden');
   showToast('Настройки сохранены');
-  loadSubmissions();
+  subscribeToCloudRoom(AdminState.currentRoomPin);
 });
 
 // Theme Toggle
@@ -639,7 +685,9 @@ function showToast(msg) {
 function initDashboard() {
   pinDisplay.textContent = AdminState.currentRoomPin;
   applyTheme(AdminState.theme);
-  loadSubmissions();
+  loadLocalSubmissions();
+  subscribeToCloudRoom(AdminState.currentRoomPin);
+  renderAll();
 }
 
 document.addEventListener('DOMContentLoaded', () => {

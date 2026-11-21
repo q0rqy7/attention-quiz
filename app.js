@@ -489,15 +489,30 @@ function startQuiz() {
   renderQuestion(state.currentQuestionIndex);
 }
 
+function sendCloudEvent(roomPin, data) {
+  const topic = `mf_room_${roomPin.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+  fetch(`https://ntfy.sh/${topic}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify(data)
+  }).catch(() => {});
+}
+
 function broadcastStudentJoin() {
   const joinData = {
+    type: 'STUDENT_JOINED',
     name: state.studentName,
     room: state.roomPin,
     status: 'answering',
     time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   };
+
+  // 1. Cross-device cloud sync (delivers to host admin on ANY device/network)
+  sendCloudEvent(state.roomPin, joinData);
+
+  // 2. Local fallback
   if (roomChannel) {
-    roomChannel.postMessage({ type: 'STUDENT_JOINED', room: state.roomPin, participant: joinData });
+    roomChannel.postMessage(joinData);
   }
   const joinedKey = `mindfocus_joined_${state.roomPin}`;
   let joinedList = [];
@@ -723,9 +738,10 @@ function getPersonalInsights() {
   };
 }
 
-// Broadcast and store student result into session
+// Broadcast and store student result into session (across all devices)
 function submitStudentResult(results) {
   const submission = {
+    type: 'NEW_SUBMISSION',
     name: state.studentName,
     room: state.roomPin,
     profileKey: results.dominantKey,
@@ -737,12 +753,15 @@ function submitStudentResult(results) {
     time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   };
 
-  // 1. BroadcastChannel (instant live update to host admin tab)
+  // 1. Cross-device cloud sync (instantly reaches admin on ANY device anywhere in the world!)
+  sendCloudEvent(state.roomPin, submission);
+
+  // 2. BroadcastChannel (same-browser instant fallback)
   if (roomChannel) {
-    roomChannel.postMessage({ type: 'NEW_SUBMISSION', room: state.roomPin, submission });
+    roomChannel.postMessage(submission);
   }
 
-  // 2. localStorage sync
+  // 3. localStorage sync
   const key = `mindfocus_room_${state.roomPin}`;
   let list = [];
   try {
@@ -750,10 +769,12 @@ function submitStudentResult(results) {
   } catch(e) {
     list = [];
   }
-  list.unshift(submission);
-  localStorage.setItem(key, JSON.stringify(list));
+  if (!list.some(s => s.name === submission.name && s.time === submission.time)) {
+    list.unshift(submission);
+    localStorage.setItem(key, JSON.stringify(list));
+  }
 
-  // 3. Cloud Firebase sync if URL exists
+  // 4. Cloud Firebase sync if URL exists
   const fbUrl = localStorage.getItem('mindfocus_firebase_url');
   if (fbUrl) {
     fetch(`${fbUrl.replace(/\/$/, '')}/rooms/${state.roomPin}/submissions.json`, {
@@ -993,6 +1014,7 @@ function finishQuiz() {
 
   lucide.createIcons();
   renderStudentGroupChart();
+  syncCloudSubmissionsForStudent(state.roomPin);
 
   // Attach event listeners
   document.getElementById('native-share-btn').addEventListener('click', () => {
@@ -1011,6 +1033,37 @@ function finishQuiz() {
   });
 
   window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function syncCloudSubmissionsForStudent(roomPin) {
+  const topic = `mf_room_${roomPin.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+  fetch(`https://ntfy.sh/${topic}/json?poll=1`)
+    .then(r => r.text())
+    .then(text => {
+      if (!text || !text.trim()) return;
+      const lines = text.trim().split('\n');
+      const key = `mindfocus_room_${roomPin}`;
+      let list = [];
+      try { list = JSON.parse(localStorage.getItem(key)) || []; } catch(e) { list = []; }
+      let updated = false;
+      lines.forEach(line => {
+        try {
+          const item = JSON.parse(line);
+          if (item.event === 'message' && item.message) {
+            const d = JSON.parse(item.message);
+            if (d.type === 'NEW_SUBMISSION' && !list.some(s => s.name === d.name && s.time === d.time)) {
+              list.unshift(d);
+              updated = true;
+            }
+          }
+        } catch(e) {}
+      });
+      if (updated) {
+        localStorage.setItem(key, JSON.stringify(list));
+        renderStudentGroupChart();
+      }
+    })
+    .catch(() => {});
 }
 
 // ========================================================
