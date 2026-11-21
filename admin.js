@@ -145,11 +145,9 @@ projectorBtn.addEventListener('click', () => {
 });
 
 // ========================================================
-// 3. Cross-Device Cloud Sync Engine (ntfy.sh & fallback)
+// 3. Cross-Device Real-Time Cloud Sync (MQTT WebSocket)
 // ========================================================
-function getCloudTopic(pin) {
-  return `mf_room_${pin.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
-}
+let mqttAdminClient = null;
 
 function getStorageKey() {
   return `mindfocus_room_${AdminState.currentRoomPin}`;
@@ -160,63 +158,95 @@ function getJoinedKey() {
 }
 
 function subscribeToCloudRoom(pin) {
-  const topic = getCloudTopic(pin);
-  syncIndicator.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse inline-block mr-1"></span> Режим: Live Cloud (Все устройства)`;
+  const cleanPin = pin.replace(/[^a-zA-Z0-9_-]/g, '_');
+  syncIndicator.innerHTML = `<span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse inline-block mr-1"></span> Подключение к облаку...`;
 
-  // 1. Initial history fetch from cloud
-  fetchCloudHistory(topic);
-
-  // 2. Realtime Server-Sent Events (SSE) Stream
-  if (activeEventSource) {
-    activeEventSource.close();
+  if (mqttAdminClient) {
+    try { mqttAdminClient.end(true); } catch(e) {}
+    mqttAdminClient = null;
   }
 
-  try {
-    const sse = new EventSource(`https://ntfy.sh/${topic}/sse`);
-    sse.onmessage = (event) => {
-      try {
-        const item = JSON.parse(event.data);
-        if (item.event === 'message' && item.message) {
-          const payload = JSON.parse(item.message);
-          handleCloudMessage(payload);
+  const brokers = [
+    'wss://broker.emqx.io:8084/mqtt',
+    'wss://broker.hivemq.com:8884/mqtt'
+  ];
+  let brokerIdx = 0;
+
+  function tryConnect() {
+    if (typeof mqtt === 'undefined') {
+      setTimeout(tryConnect, 500);
+      return;
+    }
+
+    const brokerUrl = brokers[brokerIdx];
+    const clientId = 'mf_host_' + Math.random().toString(16).substring(2, 10);
+
+    try {
+      const client = mqtt.connect(brokerUrl, {
+        clientId: clientId,
+        clean: true,
+        connectTimeout: 7000,
+        reconnectPeriod: 3000
+      });
+
+      client.on('connect', () => {
+        syncIndicator.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse inline-block mr-1"></span> Режим: Live Cloud (Все устройства)`;
+        client.subscribe(`mindfocus/rooms/${cleanPin}/#`, { qos: 1 });
+
+        // If host already has submissions, publish retained cohort for incoming students
+        if (AdminState.submissions.length > 0) {
+          publishAdminCohort();
         }
-      } catch(e) {}
-    };
-    activeEventSource = sse;
-  } catch(e) {}
+      });
 
-  // 3. Periodic fallback poll every 4 seconds
-  if (pollingInterval) clearInterval(pollingInterval);
-  pollingInterval = setInterval(() => {
-    fetchCloudHistory(topic, false);
-  }, 4000);
-}
-
-function fetchCloudHistory(topic, triggerToast = true) {
-  fetch(`https://ntfy.sh/${topic}/json?poll=1`)
-    .then(r => r.text())
-    .then(text => {
-      if (!text || !text.trim()) return;
-      const lines = text.trim().split('\n');
-      let newCount = 0;
-      lines.forEach(line => {
+      client.on('message', (topic, messageBuffer) => {
         try {
-          const item = JSON.parse(line);
-          if (item.event === 'message' && item.message) {
-            const payload = JSON.parse(item.message);
-            if (handleCloudMessage(payload, false)) {
-              newCount++;
+          const payload = JSON.parse(messageBuffer.toString());
+          if (topic.endsWith('/cohort') && Array.isArray(payload)) {
+            let changed = false;
+            payload.forEach(sub => {
+              if (handleCloudMessage(sub, false)) changed = true;
+            });
+            if (changed) {
+              saveLocalSubmissions();
+              saveJoinedParticipants();
+              renderAll();
             }
+          } else if (payload.type === 'REQUEST_COHORT') {
+            publishAdminCohort();
+          } else {
+            handleCloudMessage(payload, true);
           }
         } catch(e) {}
       });
-      if (newCount > 0) {
-        saveLocalSubmissions();
-        saveJoinedParticipants();
-        renderAll();
-      }
-    })
-    .catch(() => {});
+
+      client.on('error', () => {
+        client.end(true);
+        brokerIdx = (brokerIdx + 1) % brokers.length;
+        setTimeout(tryConnect, 1500);
+      });
+
+      mqttAdminClient = client;
+    } catch(e) {}
+  }
+
+  tryConnect();
+}
+
+function publishAdminCohort() {
+  if (mqttAdminClient && mqttAdminClient.connected) {
+    const cleanPin = AdminState.currentRoomPin.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const topic = `mindfocus/rooms/${cleanPin}/cohort`;
+    mqttAdminClient.publish(topic, JSON.stringify(AdminState.submissions), { qos: 1, retain: true });
+  }
+}
+
+function publishCloudEvent(event) {
+  if (mqttAdminClient && mqttAdminClient.connected) {
+    const cleanPin = AdminState.currentRoomPin.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const topic = `mindfocus/rooms/${cleanPin}/events`;
+    mqttAdminClient.publish(topic, JSON.stringify(event), { qos: 1 });
+  }
 }
 
 function handleCloudMessage(payload, doRender = true) {
@@ -285,6 +315,7 @@ function handleCloudMessage(payload, doRender = true) {
       if (doRender) {
         showToast(`Сдал тест: ${rawName} (${ARCHETYPE_META[payload.profileKey]?.title || 'Смешанный'})`);
         renderAll();
+        publishAdminCohort();
       }
     }
   }
@@ -323,13 +354,9 @@ window.kickStudent = function(rawName) {
     try { roomChannel.postMessage(kickEvent); } catch(e) {}
   }
 
-  // 2. Cloud ntfy.sh (cross-device push to students on smartphones/tablets)
-  const topic = getCloudTopic(AdminState.currentRoomPin);
-  fetch(`https://ntfy.sh/${topic}`, {
-    method: 'POST',
-    body: JSON.stringify(kickEvent),
-    headers: { 'Title': 'Kick Student', 'Priority': '3' }
-  }).catch(() => {});
+  // 2. Real-Time MQTT WebSocket Broadcast to all student devices
+  publishCloudEvent(kickEvent);
+  publishAdminCohort();
 
   showToast(`Участник "${studentName}" удален из сессии`);
 };

@@ -502,12 +502,16 @@ function startQuiz() {
 }
 
 function sendCloudEvent(roomPin, data) {
-  const topic = `mf_room_${roomPin.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
-  fetch(`https://ntfy.sh/${topic}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json; charset=utf-8' },
-    body: JSON.stringify(data)
-  }).catch(() => {});
+  const cleanPin = (roomPin || state.roomPin || '582-104').replace(/[^a-zA-Z0-9_-]/g, '_');
+  if (studentMqttClient && studentMqttClient.connected) {
+    studentMqttClient.publish(`mindfocus/rooms/${cleanPin}/events`, JSON.stringify(data), { qos: 1 });
+  } else {
+    setTimeout(() => {
+      if (studentMqttClient && studentMqttClient.connected) {
+        studentMqttClient.publish(`mindfocus/rooms/${cleanPin}/events`, JSON.stringify(data), { qos: 1 });
+      }
+    }, 800);
+  }
 }
 
 function broadcastStudentJoin() {
@@ -784,6 +788,12 @@ function submitStudentResult(results) {
   if (!list.some(s => s.name === submission.name && s.time === submission.time)) {
     list.unshift(submission);
     localStorage.setItem(key, JSON.stringify(list));
+  }
+
+  // 4. Publish full cohort to retained topic so all other students immediately get it
+  if (studentMqttClient && studentMqttClient.connected) {
+    const cleanPin = (state.roomPin || '582-104').replace(/[^a-zA-Z0-9_-]/g, '_');
+    studentMqttClient.publish(`mindfocus/rooms/${cleanPin}/cohort`, JSON.stringify(list), { qos: 1, retain: true });
   }
 
   // 4. Cloud Firebase sync if URL exists
@@ -1067,10 +1077,9 @@ function renderResultContent(results) {
 }
 
 // ========================================================
-// Realtime Live Cloud Sync for Students on Result Screen
+// Realtime Live Cloud Sync for Students (MQTT WebSocket)
 // ========================================================
-let activeStudentEventSource = null;
-let studentPollingInterval = null;
+let studentMqttClient = null;
 
 function handleStudentCloudEvent(payload) {
   if (!payload || !payload.type) return;
@@ -1121,102 +1130,90 @@ function handleStudentCloudEvent(payload) {
 }
 
 function startStudentCloudSync(roomPin) {
-  const cleanPin = roomPin || state.roomPin || '582-104';
-  const topic = `mf_room_${cleanPin.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+  const cleanPin = (roomPin || state.roomPin || '582-104').replace(/[^a-zA-Z0-9_-]/g, '_');
 
-  // 1. Initial history fetch from cloud
-  fetchCloudSubmissions(cleanPin);
-
-  // 2. Real-time Server-Sent Events (SSE)
-  if (activeStudentEventSource) {
-    activeStudentEventSource.close();
-    activeStudentEventSource = null;
+  if (studentMqttClient) {
+    try { studentMqttClient.end(true); } catch(e) {}
+    studentMqttClient = null;
   }
 
-  try {
-    const sse = new EventSource(`https://ntfy.sh/${topic}/sse`);
-    sse.onmessage = (event) => {
-      try {
-        const item = JSON.parse(event.data);
-        if (item.event === 'message' && item.message) {
-          const payload = JSON.parse(item.message);
-          handleStudentCloudEvent(payload);
+  const brokers = [
+    'wss://broker.emqx.io:8084/mqtt',
+    'wss://broker.hivemq.com:8884/mqtt'
+  ];
+  let brokerIdx = 0;
+
+  function tryConnect() {
+    if (typeof mqtt === 'undefined') {
+      setTimeout(tryConnect, 500);
+      return;
+    }
+
+    const brokerUrl = brokers[brokerIdx];
+    const clientId = 'mf_stu_' + Math.random().toString(16).substring(2, 10);
+
+    try {
+      const client = mqtt.connect(brokerUrl, {
+        clientId: clientId,
+        clean: true,
+        connectTimeout: 7000,
+        reconnectPeriod: 3000
+      });
+
+      client.on('connect', () => {
+        client.subscribe(`mindfocus/rooms/${cleanPin}/#`, { qos: 1 });
+        // Ask for full cohort if on results screen
+        if (state.isFinished) {
+          client.publish(`mindfocus/rooms/${cleanPin}/events`, JSON.stringify({ type: 'REQUEST_COHORT', room: state.roomPin }), { qos: 1 });
         }
-      } catch(e) {}
-    };
-    activeStudentEventSource = sse;
-  } catch(e) {}
+      });
 
-  // 3. Ultra-fast fallback recurring poll every 2 seconds
-  if (studentPollingInterval) clearInterval(studentPollingInterval);
-  studentPollingInterval = setInterval(() => {
-    fetchCloudSubmissions(cleanPin);
-  }, 2000);
-}
-
-function stopStudentCloudSync() {
-  if (activeStudentEventSource) {
-    activeStudentEventSource.close();
-    activeStudentEventSource = null;
-  }
-  if (studentPollingInterval) {
-    clearInterval(studentPollingInterval);
-    studentPollingInterval = null;
-  }
-}
-
-function fetchCloudSubmissions(roomPin) {
-  const cleanPin = roomPin || state.roomPin || '582-104';
-  const topic = `mf_room_${cleanPin.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
-  fetch(`https://ntfy.sh/${topic}/json?poll=1`)
-    .then(r => r.text())
-    .then(text => {
-      if (!text || !text.trim()) return;
-      const lines = text.trim().split('\n');
-      const key = `mindfocus_room_${cleanPin}`;
-      let list = [];
-      try { list = JSON.parse(localStorage.getItem(key)) || []; } catch(e) { list = []; }
-      let changed = false;
-
-      lines.forEach(line => {
+      client.on('message', (topic, messageBuffer) => {
         try {
-          const item = JSON.parse(line);
-          if (item.event === 'message' && item.message) {
-            const payload = JSON.parse(item.message);
-            if (payload.type === 'KICK_STUDENT') {
-              const kickedName = (payload.name || '').trim().toLowerCase();
-              const myName = (state.studentName || '').trim().toLowerCase();
-              if (myName && kickedName === myName) {
-                stopStudentCloudSync();
-                localStorage.removeItem('mindfocus_active_result');
-                sessionStorage.removeItem('mindfocus_active_result');
-                alert('Вы были удалены из этой сессии владельцем.');
-                retakeQuiz();
-                return;
-              }
-              const lenBefore = list.length;
-              list = list.filter(s => (s.name || '').toLowerCase() !== kickedName);
-              if (list.length !== lenBefore) changed = true;
-            } else if (payload.type === 'NEW_SUBMISSION') {
-              const normName = (payload.name || '').toLowerCase();
-              const existingIdx = list.findIndex(s => (s.name || '').toLowerCase() === normName);
-              if (existingIdx === -1) {
-                list.unshift(payload);
+          const payload = JSON.parse(messageBuffer.toString());
+          if (topic.endsWith('/cohort') && Array.isArray(payload)) {
+            const key = `mindfocus_room_${state.roomPin || '582-104'}`;
+            let list = [];
+            try { list = JSON.parse(localStorage.getItem(key)) || []; } catch(e) { list = []; }
+            let changed = false;
+
+            payload.forEach(item => {
+              if (item && item.name && !list.some(s => s.name.toLowerCase() === item.name.toLowerCase())) {
+                list.push(item);
                 changed = true;
               }
+            });
+
+            if (changed) {
+              localStorage.setItem(key, JSON.stringify(list));
+              if (state.isFinished) {
+                renderStudentGroupChart();
+              }
             }
+          } else {
+            handleStudentCloudEvent(payload);
           }
         } catch(e) {}
       });
 
-      if (changed) {
-        localStorage.setItem(key, JSON.stringify(list));
-        if (state.isFinished) {
-          renderStudentGroupChart();
-        }
-      }
-    })
-    .catch(() => {});
+      client.on('error', () => {
+        client.end(true);
+        brokerIdx = (brokerIdx + 1) % brokers.length;
+        setTimeout(tryConnect, 1500);
+      });
+
+      studentMqttClient = client;
+    } catch(e) {}
+  }
+
+  tryConnect();
+}
+
+function stopStudentCloudSync() {
+  if (studentMqttClient) {
+    try { studentMqttClient.end(true); } catch(e) {}
+    studentMqttClient = null;
+  }
 }
 
 // ========================================================
