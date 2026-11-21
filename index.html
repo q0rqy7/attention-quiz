@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="ru" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Тест: Кто управляет твоим вниманием?</title>
+  <meta name="description" content="Узнай свой цифровой профиль: Тревожный радар, Слабый тормоз или Автопилот. Экспресс-тест на управление вниманием с персональным разбором.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- Canvas Confetti -->
+  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.2/dist/confetti.browser.min.js"></script>
+
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Plus Jakarta Sans"', 'Inter', 'system-ui', 'sans-serif'],
+          },
+          colors: {
+            brand: {
+              50: '#eef2ff',
+              100: '#e0e7ff',
+              400: '#818cf8',
+              500: '#6366f1',
+              600: '#4f46e5',
+              700: '#4338ca',
+            },
+            radar: '#ef4444',
+            brake: '#f97316',
+            autopilot: '#eab308',
+            mixed: '#10b981',
+          },
+          boxShadow: {
+            'glow-indigo': '0 0 25px -5px rgba(99, 102, 241, 0.45)',
+            'glow-cyan': '0 0 25px -5px rgba(6, 182, 212, 0.45)',
+            'glow-red': '0 0 25px -5px rgba(239, 68, 68, 0.45)',
+            'glass': '0 8px 32px 0 rgba(0, 0, 0, 0.3)',
+            'apple': '0 4px 20px -2px rgba(0, 0, 0, 0.06), 0 2px 6px -1px rgba(0, 0, 0, 0.04)',
+          },
+          animation: {
+            'pulse-fast': 'pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+            'float': 'float 6s ease-in-out infinite',
+            'glow': 'glow 3s ease-in-out infinite alternate',
+          },
+          keyframes: {
+            float: {
+              '0%, 100%': { transform: 'translateY(0px)' },
+              '50%': { transform: 'translateY(-8px)' },
+            },
+            glow: {
+              '0%': { opacity: '0.4' },
+              '100%': { opacity: '0.8' },
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100 transition-colors duration-300 font-sans antialiased overflow-x-hidden selection:bg-indigo-500 selection:text-white">
+
+  <!-- Background decorative light orbs (Glassmorphism effect) -->
+  <div class="fixed inset-0 pointer-events-none overflow-hidden z-0">
+    <div id="orb-1" class="absolute -top-32 -left-32 w-96 h-96 rounded-full bg-indigo-600/20 blur-3xl transition-opacity duration-500 animate-float"></div>
+    <div id="orb-2" class="absolute top-1/3 -right-32 w-96 h-96 rounded-full bg-violet-600/15 blur-3xl transition-opacity duration-500 animate-float" style="animation-delay: -3s;"></div>
+    <div id="orb-3" class="absolute -bottom-32 left-1/3 w-96 h-96 rounded-full bg-cyan-600/15 blur-3xl transition-opacity duration-500"></div>
+  </div>
+
+  <!-- Main Container -->
+  <div class="relative z-10 flex flex-col min-h-screen">
+
+    <!-- Top Navigation / Header -->
+    <header class="w-full max-w-4xl mx-auto px-4 pt-4 sm:pt-6 pb-3 flex items-center justify-between gap-3">
+      <!-- Logo / Title Badge -->
+      <div class="flex items-center gap-2.5">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-500 via-indigo-600 to-cyan-400 flex items-center justify-center text-white shadow-glow-indigo">
+          <i data-lucide="brain-circuit" class="w-5 h-5"></i>
+        </div>
+        <div class="flex flex-col">
+          <span class="text-sm font-bold tracking-tight bg-gradient-to-r from-indigo-400 via-purple-300 to-cyan-400 bg-clip-text text-transparent title-gradient">MindFocus</span>
+          <span class="text-[11px] text-slate-400 -mt-0.5 font-medium">Тест внимания</span>
+        </div>
+      </div>
+
+      <!-- Action controls: Timer, Audio & Theme Toggle -->
+      <div class="flex items-center gap-2 sm:gap-3">
+        <!-- Persistent Timer (Visible during quiz) -->
+        <div id="quiz-timer-container" class="hidden items-center gap-2 px-3 py-1.5 rounded-full border border-slate-700/60 bg-slate-900/60 backdrop-blur-md text-xs font-mono font-semibold transition-all">
+          <i data-lucide="timer" class="w-4 h-4 text-indigo-400 timer-icon"></i>
+          <span id="timer-display" class="text-slate-200 tracking-wider">05:00</span>
+        </div>
+
+        <!-- Sound Toggle -->
+        <button id="sound-toggle-btn" type="button" aria-label="Включить / выключить звук" title="Звуковые эффекты"
+          class="w-9 h-9 rounded-xl flex items-center justify-center border border-slate-700/60 bg-slate-900/50 backdrop-blur-md text-slate-300 hover:text-white hover:border-slate-500 transition-all hover:scale-105 active:scale-95">
+          <i id="sound-icon" data-lucide="volume-2" class="w-4 h-4 text-slate-300"></i>
+        </button>
+
+        <!-- Theme Toggle (Dark Neo-Glass <-> Clean Apple/Notion Light) -->
+        <button id="theme-toggle-btn" type="button" aria-label="Переключить тему оформления" title="Сменить тему оформления"
+          class="w-9 h-9 rounded-xl flex items-center justify-center border border-slate-700/60 bg-slate-900/50 backdrop-blur-md text-slate-300 hover:text-white hover:border-slate-500 transition-all hover:scale-105 active:scale-95">
+          <i id="theme-icon" data-lucide="sun" class="w-4 h-4 text-amber-300"></i>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="flex-1 flex items-center justify-center px-4 py-4 sm:py-8">
+      <div class="w-full max-w-2xl">
+
+        <!-- ============================================== -->
+        <!-- SCREEN 1: WELCOME SCREEN                       -->
+        <!-- ============================================== -->
+        <div id="welcome-screen" class="transition-all duration-300">
+          <div class="glass-card rounded-3xl p-6 sm:p-10 border border-slate-800/80 shadow-2xl relative overflow-hidden text-center">
+            
+            <!-- Glow background pill -->
+            <div class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 text-xs font-semibold mb-6 animate-pulse">
+              <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+              Экспресс-диагностика цифрового фокуса
+            </div>
+
+            <!-- Title -->
+            <h1 class="text-2xl sm:text-4xl font-extrabold tracking-tight text-white mb-4 leading-tight">
+              Тест на 3 минуты: <br class="hidden sm:inline">
+              <span class="bg-gradient-to-r from-indigo-400 via-violet-300 to-cyan-400 bg-clip-text text-transparent">Кто управляет твоим вниманием?</span>
+            </h1>
+
+            <!-- Description -->
+            <p class="text-slate-300 text-sm sm:text-base leading-relaxed max-w-lg mx-auto mb-8">
+              Отвечай не задумываясь. Первый ответ — самый честный. В конце тебя ждет персональный разбор и конкретный план действий.
+            </p>
+
+            <!-- Features Pills -->
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-8 text-left">
+              <div class="flex items-center gap-3 p-3 rounded-2xl bg-slate-800/40 border border-slate-700/50">
+                <div class="w-8 h-8 rounded-lg bg-indigo-500/20 text-indigo-400 flex items-center justify-center shrink-0">
+                  <i data-lucide="help-circle" class="w-4 h-4"></i>
+                </div>
+                <div>
+                  <div class="text-xs font-bold text-slate-200">13 вопросов</div>
+                  <div class="text-[11px] text-slate-400">Без скучных тестов</div>
+                </div>
+              </div>
+
+              <div class="flex items-center gap-3 p-3 rounded-2xl bg-slate-800/40 border border-slate-700/50">
+                <div class="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
+                  <i data-lucide="clock" class="w-4 h-4"></i>
+                </div>
+                <div>
+                  <div class="text-xs font-bold text-slate-200">5 минут</div>
+                  <div class="text-[11px] text-slate-400">Ограничение по таймеру</div>
+                </div>
+              </div>
+
+              <div class="flex items-center gap-3 p-3 rounded-2xl bg-slate-800/40 border border-slate-700/50">
+                <div class="w-8 h-8 rounded-lg bg-cyan-500/20 text-cyan-400 flex items-center justify-center shrink-0">
+                  <i data-lucide="sparkles" class="w-4 h-4"></i>
+                </div>
+                <div>
+                  <div class="text-xs font-bold text-slate-200">4 архетипа</div>
+                  <div class="text-[11px] text-slate-400">Персональный разбор</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Start Button -->
+            <button id="start-quiz-btn" type="button"
+              class="w-full sm:w-auto px-8 py-4 rounded-2xl bg-gradient-to-r from-indigo-500 via-indigo-600 to-violet-600 text-white font-bold text-base shadow-glow-indigo hover:shadow-indigo-500/60 hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-3 mx-auto group">
+              <span>Начать тест</span>
+              <i data-lucide="arrow-right" class="w-5 h-5 group-hover:translate-x-1 transition-transform"></i>
+            </button>
+
+            <!-- Subtle note -->
+            <p class="text-[12px] text-slate-500 mt-4">
+              Конфиденциально • Результат рассчитывается мгновенно
+            </p>
+          </div>
+        </div>
+
+        <!-- ============================================== -->
+        <!-- SCREEN 2: QUIZ WIZARD SCREEN                   -->
+        <!-- ============================================== -->
+        <div id="quiz-screen" class="hidden transition-all duration-300">
+          
+          <!-- Question Meta Header: Step counter & Progress -->
+          <div class="mb-4 sm:mb-6">
+            <div class="flex items-center justify-between text-xs font-semibold text-slate-400 mb-2">
+              <span id="step-indicator" class="flex items-center gap-1.5">
+                <span class="w-2 h-2 rounded-full bg-indigo-500 animate-pulse"></span>
+                <span>Вопрос <strong id="current-question-num" class="text-indigo-400">1</strong> из 13</span>
+              </span>
+              <span id="progress-percentage" class="font-mono text-slate-300">8%</span>
+            </div>
+
+            <!-- Progress Bar -->
+            <div class="w-full h-2 rounded-full bg-slate-800/80 overflow-hidden p-0.5 border border-slate-700/40">
+              <div id="quiz-progress-bar" class="h-full rounded-full bg-gradient-to-r from-indigo-500 via-violet-500 to-cyan-400 transition-all duration-500 ease-out" style="width: 8%;"></div>
+            </div>
+          </div>
+
+          <!-- Question Card -->
+          <div class="glass-card rounded-3xl p-6 sm:p-9 border border-slate-800/80 shadow-2xl relative min-h-[420px] flex flex-col justify-between">
+            
+            <!-- Question Content (Rendered Dynamically via JS) -->
+            <div id="question-container" class="quiz-step-fade-in flex-1">
+              <!-- Injected by app.js -->
+            </div>
+
+            <!-- Card Bottom Actions: Back and Next Buttons -->
+            <div class="flex items-center justify-between gap-3 pt-6 mt-6 border-t border-slate-800/60">
+              <button id="prev-question-btn" type="button"
+                class="px-4 py-2.5 rounded-xl border border-slate-700/60 bg-slate-900/40 text-slate-300 hover:text-white hover:border-slate-500 text-xs font-semibold flex items-center gap-2 transition-all disabled:opacity-30 disabled:pointer-events-none">
+                <i data-lucide="chevron-left" class="w-4 h-4"></i>
+                <span>Назад</span>
+              </button>
+
+              <div class="flex items-center gap-2">
+                <span id="auto-advance-hint" class="text-[11px] text-slate-500 hidden sm:inline-block">Выберите вариант</span>
+                <button id="next-question-btn" type="button" disabled
+                  class="px-6 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-600 text-white text-xs sm:text-sm font-bold shadow-md hover:shadow-indigo-500/40 transition-all flex items-center gap-2 disabled:opacity-40 disabled:pointer-events-none hover:scale-[1.02] active:scale-[0.98]">
+                  <span>Далее</span>
+                  <i data-lucide="chevron-right" class="w-4 h-4"></i>
+                </button>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- ============================================== -->
+        <!-- SCREEN 3: RESULTS / DIAGNOSIS SCREEN           -->
+        <!-- ============================================== -->
+        <div id="result-screen" class="hidden transition-all duration-500">
+          <!-- Populated dynamically by app.js -->
+        </div>
+
+      </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="w-full max-w-4xl mx-auto px-4 py-4 text-center text-xs text-slate-500 border-t border-slate-800/40 flex flex-col sm:flex-row items-center justify-between gap-2">
+      <div class="flex items-center gap-2">
+        <i data-lucide="shield-check" class="w-4 h-4 text-emerald-400"></i>
+        <span>Тест основан на когнитивных паттернах внимания и привычек</span>
+      </div>
+      <div>
+        <span>MindFocus Quiz • 2026</span>
+      </div>
+    </footer>
+
+  </div>
+
+  <!-- Notification Toast for Copied Result -->
+  <div id="toast" class="fixed bottom-6 right-6 z-50 transform translate-y-24 opacity-0 pointer-events-none transition-all duration-300 flex items-center gap-3 px-4 py-3 rounded-2xl bg-slate-900 text-white border border-indigo-500/40 shadow-xl">
+    <i data-lucide="check-circle" class="w-5 h-5 text-emerald-400"></i>
+    <span id="toast-message" class="text-sm font-medium">Результат скопирован в буфер обмена!</span>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
