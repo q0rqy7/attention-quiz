@@ -813,7 +813,7 @@ function finishQuiz() {
   const results = calculateResults();
   submitStudentResult(results);
 
-  // Save session state to sessionStorage so page refresh does not lose results
+  // Save session state to localStorage AND sessionStorage so page refresh does not lose results
   try {
     const saved = {
       isFinished: true,
@@ -823,6 +823,7 @@ function finishQuiz() {
       results: results,
       savedAt: Date.now()
     };
+    localStorage.setItem('mindfocus_active_result', JSON.stringify(saved));
     sessionStorage.setItem('mindfocus_active_result', JSON.stringify(saved));
   } catch(e) {}
 
@@ -1074,6 +1075,11 @@ let studentPollingInterval = null;
 function handleStudentCloudEvent(payload) {
   if (!payload || !payload.type) return;
 
+  const currentRoom = state.roomPin || payload.room || '582-104';
+  const key = `mindfocus_room_${currentRoom}`;
+  let list = [];
+  try { list = JSON.parse(localStorage.getItem(key)) || []; } catch(e) { list = []; }
+
   if (payload.type === 'KICK_STUDENT') {
     const kickedName = (payload.name || '').trim().toLowerCase();
     const myName = (state.studentName || '').trim().toLowerCase();
@@ -1081,6 +1087,7 @@ function handleStudentCloudEvent(payload) {
     // If this student was kicked by the host
     if (myName && kickedName === myName) {
       stopStudentCloudSync();
+      localStorage.removeItem('mindfocus_active_result');
       sessionStorage.removeItem('mindfocus_active_result');
       alert('Вы были удалены из этой сессии владельцем.');
       retakeQuiz();
@@ -1088,12 +1095,10 @@ function handleStudentCloudEvent(payload) {
     }
 
     // If another student was kicked: remove from local cohort and re-render chart
-    const key = `mindfocus_room_${state.roomPin}`;
-    let list = [];
-    try { list = JSON.parse(localStorage.getItem(key)) || []; } catch(e) { list = []; }
-    const filtered = list.filter(s => (s.name || '').toLowerCase() !== kickedName);
-    if (filtered.length !== list.length) {
-      localStorage.setItem(key, JSON.stringify(filtered));
+    const lenBefore = list.length;
+    list = list.filter(s => (s.name || '').toLowerCase() !== kickedName);
+    if (list.length !== lenBefore) {
+      localStorage.setItem(key, JSON.stringify(list));
       if (state.isFinished) {
         renderStudentGroupChart();
       }
@@ -1102,23 +1107,11 @@ function handleStudentCloudEvent(payload) {
   }
 
   if (payload.type === 'NEW_SUBMISSION') {
-    const key = `mindfocus_room_${state.roomPin}`;
-    let list = [];
-    try { list = JSON.parse(localStorage.getItem(key)) || []; } catch(e) { list = []; }
-
     const normName = (payload.name || '').toLowerCase();
     const existingIdx = list.findIndex(s => (s.name || '').toLowerCase() === normName);
 
-    let changed = false;
-    if (existingIdx >= 0) {
-      list[existingIdx] = payload;
-      changed = true;
-    } else {
+    if (existingIdx === -1) {
       list.unshift(payload);
-      changed = true;
-    }
-
-    if (changed) {
       localStorage.setItem(key, JSON.stringify(list));
       if (state.isFinished) {
         renderStudentGroupChart();
@@ -1128,11 +1121,11 @@ function handleStudentCloudEvent(payload) {
 }
 
 function startStudentCloudSync(roomPin) {
-  if (!roomPin) return;
-  const topic = `mf_room_${roomPin.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+  const cleanPin = roomPin || state.roomPin || '582-104';
+  const topic = `mf_room_${cleanPin.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
 
   // 1. Initial history fetch from cloud
-  fetchCloudSubmissions(roomPin);
+  fetchCloudSubmissions(cleanPin);
 
   // 2. Real-time Server-Sent Events (SSE)
   if (activeStudentEventSource) {
@@ -1154,11 +1147,11 @@ function startStudentCloudSync(roomPin) {
     activeStudentEventSource = sse;
   } catch(e) {}
 
-  // 3. Fallback recurring poll every 3.5 seconds
+  // 3. Ultra-fast fallback recurring poll every 2 seconds
   if (studentPollingInterval) clearInterval(studentPollingInterval);
   studentPollingInterval = setInterval(() => {
-    fetchCloudSubmissions(roomPin);
-  }, 3500);
+    fetchCloudSubmissions(cleanPin);
+  }, 2000);
 }
 
 function stopStudentCloudSync() {
@@ -1173,22 +1166,55 @@ function stopStudentCloudSync() {
 }
 
 function fetchCloudSubmissions(roomPin) {
-  if (!roomPin) return;
-  const topic = `mf_room_${roomPin.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+  const cleanPin = roomPin || state.roomPin || '582-104';
+  const topic = `mf_room_${cleanPin.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
   fetch(`https://ntfy.sh/${topic}/json?poll=1`)
     .then(r => r.text())
     .then(text => {
       if (!text || !text.trim()) return;
       const lines = text.trim().split('\n');
+      const key = `mindfocus_room_${cleanPin}`;
+      let list = [];
+      try { list = JSON.parse(localStorage.getItem(key)) || []; } catch(e) { list = []; }
+      let changed = false;
+
       lines.forEach(line => {
         try {
           const item = JSON.parse(line);
           if (item.event === 'message' && item.message) {
             const payload = JSON.parse(item.message);
-            handleStudentCloudEvent(payload);
+            if (payload.type === 'KICK_STUDENT') {
+              const kickedName = (payload.name || '').trim().toLowerCase();
+              const myName = (state.studentName || '').trim().toLowerCase();
+              if (myName && kickedName === myName) {
+                stopStudentCloudSync();
+                localStorage.removeItem('mindfocus_active_result');
+                sessionStorage.removeItem('mindfocus_active_result');
+                alert('Вы были удалены из этой сессии владельцем.');
+                retakeQuiz();
+                return;
+              }
+              const lenBefore = list.length;
+              list = list.filter(s => (s.name || '').toLowerCase() !== kickedName);
+              if (list.length !== lenBefore) changed = true;
+            } else if (payload.type === 'NEW_SUBMISSION') {
+              const normName = (payload.name || '').toLowerCase();
+              const existingIdx = list.findIndex(s => (s.name || '').toLowerCase() === normName);
+              if (existingIdx === -1) {
+                list.unshift(payload);
+                changed = true;
+              }
+            }
           }
         } catch(e) {}
       });
+
+      if (changed) {
+        localStorage.setItem(key, JSON.stringify(list));
+        if (state.isFinished) {
+          renderStudentGroupChart();
+        }
+      }
     })
     .catch(() => {});
 }
@@ -1459,6 +1485,7 @@ function showToast(message) {
 }
 
 function retakeQuiz() {
+  localStorage.removeItem('mindfocus_active_result');
   sessionStorage.removeItem('mindfocus_active_result');
   stopStudentCloudSync();
   resultScreen.classList.add('hidden');
@@ -1490,8 +1517,8 @@ document.addEventListener('DOMContentLoaded', () => {
     soundIcon.className = sound.enabled ? 'w-4 h-4 text-slate-300' : 'w-4 h-4 text-rose-400';
   }
 
-  // Restore completed quiz session if user refreshed the page
-  const savedSessionRaw = sessionStorage.getItem('mindfocus_active_result');
+  // Restore completed quiz session if user refreshed the page (checks both localStorage and sessionStorage)
+  const savedSessionRaw = localStorage.getItem('mindfocus_active_result') || sessionStorage.getItem('mindfocus_active_result');
   if (savedSessionRaw) {
     try {
       const saved = JSON.parse(savedSessionRaw);
