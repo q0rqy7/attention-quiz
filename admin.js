@@ -12,6 +12,7 @@ const AdminState = {
   chartType: 'doughnut',
   submissions: [],
   joinedParticipants: [],
+  kickedStudents: [],
   chartInstance: null,
   theme: localStorage.getItem('mindfocus_theme') || 'dark',
 };
@@ -142,11 +143,11 @@ projectorBtn.addEventListener('click', () => {
 });
 
 // ========================================================
-// 3. Cross-Device Cloud Sync Engine (ntfy.sh & fallback)
+// 3. Multi-Transport Real-Time Sync (PeerJS WebRTC + MQTT + BroadcastChannel)
 // ========================================================
-function getCloudTopic(pin) {
-  return `mf_room_${pin.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
-}
+let hostPeer = null;
+let activeStudentConns = {};
+let mqttAdminClient = null;
 
 function getStorageKey() {
   return `mindfocus_room_${AdminState.currentRoomPin}`;
@@ -156,99 +157,201 @@ function getJoinedKey() {
   return `mindfocus_joined_${AdminState.currentRoomPin}`;
 }
 
-function subscribeToCloudRoom(pin) {
-  const topic = getCloudTopic(pin);
-  syncIndicator.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse inline-block mr-1"></span> Режим: Live Cloud (Все устройства)`;
-
-  // 1. Initial history fetch from cloud
-  fetchCloudHistory(topic);
-
-  // 2. Realtime Server-Sent Events (SSE) Stream
-  if (activeEventSource) {
-    activeEventSource.close();
-  }
-
-  try {
-    const sse = new EventSource(`https://ntfy.sh/${topic}/sse`);
-    sse.onmessage = (event) => {
-      try {
-        const item = JSON.parse(event.data);
-        if (item.event === 'message' && item.message) {
-          const payload = JSON.parse(item.message);
-          handleCloudMessage(payload);
-        }
-      } catch(e) {}
-    };
-    activeEventSource = sse;
-  } catch(e) {}
-
-  // 3. Periodic fallback poll every 4 seconds
-  if (pollingInterval) clearInterval(pollingInterval);
-  pollingInterval = setInterval(() => {
-    fetchCloudHistory(topic, false);
-  }, 4000);
+function getCleanPin(pin) {
+  return (pin || AdminState.currentRoomPin || '582-104').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
 }
 
-function fetchCloudHistory(topic, triggerToast = true) {
-  fetch(`https://ntfy.sh/${topic}/json?poll=1`)
-    .then(r => r.text())
-    .then(text => {
-      if (!text || !text.trim()) return;
-      const lines = text.trim().split('\n');
-      let newCount = 0;
-      lines.forEach(line => {
-        try {
-          const item = JSON.parse(line);
-          if (item.event === 'message' && item.message) {
-            const payload = JSON.parse(item.message);
-            if (handleCloudMessage(payload, false)) {
-              newCount++;
-            }
-          }
-        } catch(e) {}
+function subscribeToCloudRoom(pin) {
+  const cleanPin = getCleanPin(pin);
+  syncIndicator.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse inline-block mr-1"></span> Режим: Live WebRTC & Cloud`;
+
+  // 1. PeerJS WebRTC Direct Serverless Host
+  initPeerJSHost(cleanPin);
+
+  // 2. Parallel MQTT WebSocket fallback
+  initMQTTHost(cleanPin);
+}
+
+function initPeerJSHost(cleanPin) {
+  if (hostPeer) {
+    try { hostPeer.destroy(); } catch(e) {}
+    hostPeer = null;
+  }
+  activeStudentConns = {};
+
+  if (typeof Peer === 'undefined') return;
+
+  try {
+    const peerId = `mf-host-${cleanPin}`;
+    const peer = new Peer(peerId, { debug: 0 });
+
+    peer.on('open', (id) => {
+      console.log('Host WebRTC Peer Ready:', id);
+    });
+
+    peer.on('connection', (conn) => {
+      conn.on('open', () => {
+        activeStudentConns[conn.peer] = conn;
+        // Send current cohort immediately to newly connected student
+        conn.send({ type: 'COHORT_UPDATE', cohort: AdminState.submissions });
       });
-      if (newCount > 0) {
-        saveLocalSubmissions();
-        saveJoinedParticipants();
-        renderAll();
+
+      conn.on('data', (data) => {
+        if (!data) return;
+        handleCloudMessage(data, true);
+        broadcastWebRTCCohort();
+      });
+
+      conn.on('close', () => {
+        delete activeStudentConns[conn.peer];
+      });
+
+      conn.on('error', () => {
+        delete activeStudentConns[conn.peer];
+      });
+    });
+
+    peer.on('error', (err) => {
+      // If ID is taken, retry after a moment
+      if (err.type === 'unavailable-id') {
+        setTimeout(() => {
+          if (peer.destroyed) initPeerJSHost(cleanPin);
+        }, 1500);
       }
-    })
-    .catch(() => {});
+    });
+
+    hostPeer = peer;
+  } catch(e) {}
+}
+
+function broadcastWebRTCCohort() {
+  const msg = { type: 'COHORT_UPDATE', cohort: AdminState.submissions };
+  Object.values(activeStudentConns).forEach(conn => {
+    try {
+      if (conn.open) conn.send(msg);
+    } catch(e) {}
+  });
+
+  // Also publish to MQTT
+  publishMQTTCohort();
+}
+
+function broadcastWebRTCKick(studentName) {
+  const msg = { type: 'KICK_STUDENT', name: studentName, room: AdminState.currentRoomPin };
+  Object.values(activeStudentConns).forEach(conn => {
+    try {
+      if (conn.open) conn.send(msg);
+    } catch(e) {}
+  });
+}
+
+function initMQTTHost(cleanPin) {
+  if (mqttAdminClient) {
+    try { mqttAdminClient.end(true); } catch(e) {}
+    mqttAdminClient = null;
+  }
+
+  if (typeof mqtt === 'undefined') return;
+
+  try {
+    const client = mqtt.connect('wss://broker.emqx.io:8084/mqtt', {
+      clientId: 'mf_admin_' + Math.random().toString(16).substr(2, 8),
+      clean: true,
+      reconnectPeriod: 2500
+    });
+
+    client.on('connect', () => {
+      client.subscribe(`mindfocus/rooms/${cleanPin}/#`, { qos: 1 });
+      if (AdminState.submissions.length > 0) {
+        publishMQTTCohort();
+      }
+    });
+
+    client.on('message', (topic, messageBuffer) => {
+      try {
+        const payload = JSON.parse(messageBuffer.toString());
+        if (payload.type === 'REQUEST_COHORT') {
+          publishMQTTCohort();
+        } else {
+          handleCloudMessage(payload, true);
+          broadcastWebRTCCohort();
+        }
+      } catch(e) {}
+    });
+
+    mqttAdminClient = client;
+  } catch(e) {}
+}
+
+function publishMQTTCohort() {
+  if (mqttAdminClient && mqttAdminClient.connected) {
+    const cleanPin = getCleanPin(AdminState.currentRoomPin);
+    mqttAdminClient.publish(`mindfocus/rooms/${cleanPin}/cohort`, JSON.stringify(AdminState.submissions), { qos: 1, retain: true });
+  }
+}
+
+function publishMQTTEvent(event) {
+  if (mqttAdminClient && mqttAdminClient.connected) {
+    const cleanPin = getCleanPin(AdminState.currentRoomPin);
+    mqttAdminClient.publish(`mindfocus/rooms/${cleanPin}/events`, JSON.stringify(event), { qos: 1 });
+  }
 }
 
 function handleCloudMessage(payload, doRender = true) {
   if (!payload || !payload.type) return false;
 
+  const rawName = (payload.name || '').trim();
+  const lowerName = rawName.toLowerCase();
+
+  // If student was kicked, block them
+  if (payload.type === 'KICK_STUDENT') {
+    if (lowerName && !AdminState.kickedStudents.includes(lowerName)) {
+      AdminState.kickedStudents.push(lowerName);
+      localStorage.setItem(`mindfocus_kicked_${AdminState.currentRoomPin}`, JSON.stringify(AdminState.kickedStudents));
+    }
+    AdminState.submissions = AdminState.submissions.filter(s => (s.name || '').toLowerCase() !== lowerName);
+    AdminState.joinedParticipants = AdminState.joinedParticipants.filter(p => (p.name || '').toLowerCase() !== lowerName);
+    if (doRender) {
+      saveLocalSubmissions();
+      saveJoinedParticipants();
+      renderAll();
+    }
+    return true;
+  }
+
+  if (AdminState.kickedStudents.includes(lowerName)) {
+    return false;
+  }
+
   let changed = false;
 
   if (payload.type === 'STUDENT_JOINED') {
-    if (!AdminState.joinedParticipants.some(p => p.name === payload.name)) {
+    if (!AdminState.joinedParticipants.some(p => (p.name || '').toLowerCase() === lowerName)) {
       AdminState.joinedParticipants.push({
-        name: payload.name,
+        name: rawName,
         status: 'answering',
         time: payload.time || ''
       });
       changed = true;
       if (doRender) {
-        showToast(`Студент подключился: ${payload.name}`);
+        showToast(`Студент подключился: ${rawName}`);
         renderAll();
       }
     }
   } else if (payload.type === 'NEW_SUBMISSION') {
-    // Check if already in submissions
-    const existing = AdminState.submissions.find(s => s.name === payload.name && s.time === payload.time);
+    const existing = AdminState.submissions.find(s => (s.name || '').toLowerCase() === lowerName);
     if (!existing) {
       AdminState.submissions.unshift(payload);
       changed = true;
 
       // Update in joinedParticipants lobby
-      const joinedItem = AdminState.joinedParticipants.find(p => p.name === payload.name);
+      const joinedItem = AdminState.joinedParticipants.find(p => (p.name || '').toLowerCase() === lowerName);
       if (joinedItem) {
         joinedItem.status = 'completed';
         joinedItem.profileKey = payload.profileKey;
       } else {
         AdminState.joinedParticipants.push({
-          name: payload.name,
+          name: rawName,
           status: 'completed',
           profileKey: payload.profileKey,
           time: payload.time
@@ -256,7 +359,7 @@ function handleCloudMessage(payload, doRender = true) {
       }
 
       if (doRender) {
-        showToast(`Сдал тест: ${payload.name} (${ARCHETYPE_META[payload.profileKey]?.title || 'Смешанный'})`);
+        showToast(`Сдал тест: ${rawName} (${ARCHETYPE_META[payload.profileKey]?.title || 'Смешанный'})`);
         renderAll();
       }
     }
@@ -264,6 +367,47 @@ function handleCloudMessage(payload, doRender = true) {
 
   return changed;
 }
+
+window.kickStudent = function(rawName) {
+  const studentName = decodeURIComponent(rawName);
+  if (!confirm(`Вы действительно хотите удалить участника "${studentName}" из этой сессии?`)) {
+    return;
+  }
+
+  const lowerName = studentName.toLowerCase();
+  if (!AdminState.kickedStudents.includes(lowerName)) {
+    AdminState.kickedStudents.push(lowerName);
+    localStorage.setItem(`mindfocus_kicked_${AdminState.currentRoomPin}`, JSON.stringify(AdminState.kickedStudents));
+  }
+
+  AdminState.submissions = AdminState.submissions.filter(s => (s.name || '').toLowerCase() !== lowerName);
+  AdminState.joinedParticipants = AdminState.joinedParticipants.filter(p => (p.name || '').toLowerCase() !== lowerName);
+
+  saveLocalSubmissions();
+  saveJoinedParticipants();
+  renderAll();
+
+  // 1. BroadcastChannel (local tabs)
+  const kickEvent = {
+    type: 'KICK_STUDENT',
+    name: studentName,
+    room: AdminState.currentRoomPin,
+    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  };
+  if (roomChannel) {
+    try { roomChannel.postMessage(kickEvent); } catch(e) {}
+  }
+
+  // 2. WebRTC kick to all connected student phones
+  broadcastWebRTCKick(studentName);
+  broadcastWebRTCCohort();
+
+  // 3. MQTT kick to cloud
+  publishMQTTEvent(kickEvent);
+  publishMQTTCohort();
+
+  showToast(`Участник "${studentName}" удален из сессии`);
+};
 
 function loadLocalSubmissions() {
   const raw = localStorage.getItem(getStorageKey());
@@ -278,6 +422,13 @@ function loadLocalSubmissions() {
     try { AdminState.joinedParticipants = JSON.parse(rawJoined) || []; } catch(e) { AdminState.joinedParticipants = []; }
   } else {
     AdminState.joinedParticipants = [];
+  }
+
+  const rawKicked = localStorage.getItem(`mindfocus_kicked_${AdminState.currentRoomPin}`);
+  if (rawKicked) {
+    try { AdminState.kickedStudents = JSON.parse(rawKicked) || []; } catch(e) { AdminState.kickedStudents = []; }
+  } else {
+    AdminState.kickedStudents = [];
   }
 }
 
@@ -294,6 +445,7 @@ if (roomChannel) {
   roomChannel.onmessage = (event) => {
     if (!event.data || event.data.room !== AdminState.currentRoomPin) return;
     handleCloudMessage(event.data, true);
+    broadcastWebRTCCohort();
   };
 }
 
@@ -465,6 +617,7 @@ function renderAll() {
   } else {
     const displayList = joined.length > 0 ? joined : list;
     lobbyChips.innerHTML = displayList.map(p => {
+      const encName = encodeURIComponent(p.name);
       if (p.status === 'completed' || p.profileKey) {
         const meta = ARCHETYPE_META[p.profileKey] || ARCHETYPE_META.mixed;
         return `
@@ -472,6 +625,9 @@ function renderAll() {
             <span class="w-2 h-2 rounded-full" style="background-color: ${meta.color}"></span>
             <span class="font-bold">${p.name}</span>
             <span class="text-[10px] text-slate-400">(${meta.title})</span>
+            <button type="button" onclick="kickStudent('${encName}')" title="Удалить из сессии" class="ml-1 text-slate-400 hover:text-rose-400 p-0.5 rounded transition-colors inline-flex items-center justify-center">
+              <i data-lucide="x" class="w-3 h-3"></i>
+            </button>
           </div>
         `;
       } else {
@@ -480,6 +636,9 @@ function renderAll() {
             <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
             <span class="font-bold">${p.name}</span>
             <span class="text-[10px] text-amber-400/80">(проходит...)</span>
+            <button type="button" onclick="kickStudent('${encName}')" title="Удалить из сессии" class="ml-1 text-amber-400/70 hover:text-rose-400 p-0.5 rounded transition-colors inline-flex items-center justify-center">
+              <i data-lucide="x" class="w-3 h-3"></i>
+            </button>
           </div>
         `;
       }
@@ -548,7 +707,7 @@ function renderStudentsTable() {
   if (filtered.length === 0) {
     studentsTbody.innerHTML = `
       <tr>
-        <td colspan="9" class="py-10 text-center text-slate-400 italic">
+        <td colspan="10" class="py-10 text-center text-slate-400 italic">
           Пока никто не сдал тест в этой сессии.<br>
           <span class="text-xs text-indigo-400 mt-1 inline-block">Отправьте студентам код <strong>${AdminState.currentRoomPin}</strong></span>
         </td>
@@ -559,6 +718,7 @@ function renderStudentsTable() {
 
   studentsTbody.innerHTML = filtered.map((s, idx) => {
     const meta = ARCHETYPE_META[s.profileKey] || ARCHETYPE_META.mixed;
+    const encName = encodeURIComponent(s.name);
     return `
       <tr class="hover:bg-slate-800/30 transition-colors">
         <td class="py-3 px-4 font-mono text-slate-400 font-bold">${idx + 1}</td>
@@ -574,7 +734,14 @@ function renderStudentsTable() {
         <td class="py-3 px-4 font-mono">${s.autopilot || '—'} / 18</td>
         <td class="py-3 px-4 font-mono">${s.willpower || '—'} / 5</td>
         <td class="py-3 px-4 text-slate-400 text-[11px] max-w-xs truncate">${s.trigger || '—'}</td>
-        <td class="py-3 px-4 text-right font-mono text-slate-400 text-[11px]">${s.time || '—'}</td>
+        <td class="py-3 px-4 font-mono text-slate-400 text-[11px]">${s.time || '—'}</td>
+        <td class="py-3 px-4 text-center">
+          <button type="button" onclick="kickStudent('${encName}')" title="Удалить из сессии"
+            class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 text-xs font-semibold border border-rose-500/30 transition-all hover:scale-105 active:scale-95">
+            <i data-lucide="user-x" class="w-3.5 h-3.5"></i>
+            <span>Выгнать</span>
+          </button>
+        </td>
       </tr>
     `;
   }).join('');
@@ -587,9 +754,13 @@ clearSessionBtn.addEventListener('click', () => {
   if (confirm(`Вы уверены, что хотите очистить результаты сессии ${AdminState.currentRoomPin}?`)) {
     AdminState.submissions = [];
     AdminState.joinedParticipants = [];
+    AdminState.kickedStudents = [];
     saveLocalSubmissions();
     saveJoinedParticipants();
+    localStorage.removeItem(`mindfocus_kicked_${AdminState.currentRoomPin}`);
     renderAll();
+    broadcastWebRTCCohort();
+    publishMQTTCohort();
     showToast('Результаты сессии очищены');
   }
 });
