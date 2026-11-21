@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MindFocus Admin — Панель сессий и аналитика группы</title>
-  <meta name="description" content="Панель организатора и преподавателя: мониторинг прохождения теста внимания в реальном времени, сводные диаграммы и выгрузка результатов.">
+  <title>MindFocus — Панель владельца</title>
+  <meta name="description" content="Панель владельца: мониторинг прохождения теста внимания в реальном времени, сводные диаграммы и выгрузка результатов.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -104,12 +104,12 @@
           <div class="w-12 h-12 rounded-2xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center mx-auto mb-4">
             <i data-lucide="lock" class="w-6 h-6"></i>
           </div>
-          <h2 class="text-xl font-bold text-white mb-2">Вход для преподавателя</h2>
+          <h2 class="text-xl font-bold text-white mb-2">Вход для владельца</h2>
           <p class="text-xs text-slate-400 mb-6">Эта страница защищена паролем, чтобы студенты не видели результаты друг друга.</p>
 
           <form id="admin-login-form" class="space-y-4 text-left">
             <div>
-              <label for="admin-pass-input" class="block text-xs font-medium text-slate-400 mb-1">Пароль организатора:</label>
+              <label for="admin-pass-input" class="block text-xs font-medium text-slate-400 mb-1">Пароль владельца:</label>
               <input id="admin-pass-input" type="password" placeholder="Введите пароль" autofocus
                 class="w-full px-4 py-3 rounded-xl border border-slate-700/60 bg-slate-900/80 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500">
             </div>
@@ -319,7 +319,8 @@
                   <th class="py-3 px-4">Автопилот</th>
                   <th class="py-3 px-4">Сила воли</th>
                   <th class="py-3 px-4">Триггер (Вопрос 1)</th>
-                  <th class="py-3 px-4 text-right">Время</th>
+                  <th class="py-3 px-4">Время</th>
+                  <th class="py-3 px-4 text-center">Действие</th>
                 </tr>
               </thead>
               <tbody id="admin-students-tbody" class="divide-y divide-slate-800/60 text-slate-200">
@@ -336,7 +337,7 @@
     <!-- Footer -->
     <footer class="w-full max-w-6xl mx-auto px-4 py-4 text-center text-xs text-slate-500 border-t border-slate-800/40 flex flex-col sm:flex-row items-center justify-between gap-2">
       <span>MindFocus Dashboard • University Edition</span>
-      <span>Панель защищена паролем организатора</span>
+      <span>Панель защищена паролем владельца</span>
     </footer>
 
   </div>

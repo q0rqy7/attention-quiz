@@ -110,6 +110,14 @@ document.addEventListener('pointerdown', () => {
 
 // BroadcastChannel for cross-tab realtime sync with Admin Dashboard
 const roomChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('mindfocus_room_sync') : null;
+if (roomChannel) {
+  roomChannel.onmessage = (event) => {
+    if (!event.data || (event.data.room && state.roomPin && event.data.room !== state.roomPin)) return;
+    if (typeof handleStudentCloudEvent === 'function') {
+      handleStudentCloudEvent(event.data);
+    }
+  };
+}
 
 // ========================================================
 // 2. Quiz Questions Dataset
@@ -485,6 +493,10 @@ function startQuiz() {
   // Broadcast that student joined the room (for host lobby)
   broadcastStudentJoin();
 
+  if (state.roomPin) {
+    startStudentCloudSync(state.roomPin);
+  }
+
   startTimer();
   renderQuestion(state.currentQuestionIndex);
 }
@@ -789,6 +801,7 @@ function submitStudentResult(results) {
 // 9. Render Final Screen (Diagnosis + Group Analytics)
 // ========================================================
 function finishQuiz() {
+  state.isFinished = true;
   stopTimer();
   timerContainer.classList.add('hidden');
   quizScreen.classList.add('hidden');
@@ -800,6 +813,24 @@ function finishQuiz() {
   const results = calculateResults();
   submitStudentResult(results);
 
+  // Save session state to sessionStorage so page refresh does not lose results
+  try {
+    const saved = {
+      isFinished: true,
+      studentName: state.studentName,
+      roomPin: state.roomPin,
+      answers: state.answers,
+      results: results,
+      savedAt: Date.now()
+    };
+    sessionStorage.setItem('mindfocus_active_result', JSON.stringify(saved));
+  } catch(e) {}
+
+  renderResultContent(results);
+  startStudentCloudSync(state.roomPin);
+}
+
+function renderResultContent(results) {
   const profile = results.profile;
   const m = results.metrics;
   const insights = results.personalInsights;
@@ -965,7 +996,7 @@ function finishQuiz() {
           <span>Твои индивидуальные триггеры и привычки:</span>
         </div>
 
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+        <div class="grid grid-cols-1 sm:grid-2 gap-3.5">
           <div class="p-4 rounded-2xl bg-slate-800/30 border border-slate-700/40">
             <div class="text-[11px] font-bold text-slate-400 uppercase tracking-wide mb-1">Главный триггер входа (Вопрос 1)</div>
             <div class="text-xs font-medium text-slate-200">«${insights.q1}»</div>
@@ -1014,7 +1045,6 @@ function finishQuiz() {
 
   lucide.createIcons();
   renderStudentGroupChart();
-  syncCloudSubmissionsForStudent(state.roomPin);
 
   // Attach event listeners
   document.getElementById('native-share-btn').addEventListener('click', () => {
@@ -1035,33 +1065,130 @@ function finishQuiz() {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-function syncCloudSubmissionsForStudent(roomPin) {
+// ========================================================
+// Realtime Live Cloud Sync for Students on Result Screen
+// ========================================================
+let activeStudentEventSource = null;
+let studentPollingInterval = null;
+
+function handleStudentCloudEvent(payload) {
+  if (!payload || !payload.type) return;
+
+  if (payload.type === 'KICK_STUDENT') {
+    const kickedName = (payload.name || '').trim().toLowerCase();
+    const myName = (state.studentName || '').trim().toLowerCase();
+
+    // If this student was kicked by the host
+    if (myName && kickedName === myName) {
+      stopStudentCloudSync();
+      sessionStorage.removeItem('mindfocus_active_result');
+      alert('Вы были удалены из этой сессии владельцем.');
+      retakeQuiz();
+      return;
+    }
+
+    // If another student was kicked: remove from local cohort and re-render chart
+    const key = `mindfocus_room_${state.roomPin}`;
+    let list = [];
+    try { list = JSON.parse(localStorage.getItem(key)) || []; } catch(e) { list = []; }
+    const filtered = list.filter(s => (s.name || '').toLowerCase() !== kickedName);
+    if (filtered.length !== list.length) {
+      localStorage.setItem(key, JSON.stringify(filtered));
+      if (state.isFinished) {
+        renderStudentGroupChart();
+      }
+    }
+    return;
+  }
+
+  if (payload.type === 'NEW_SUBMISSION') {
+    const key = `mindfocus_room_${state.roomPin}`;
+    let list = [];
+    try { list = JSON.parse(localStorage.getItem(key)) || []; } catch(e) { list = []; }
+
+    const normName = (payload.name || '').toLowerCase();
+    const existingIdx = list.findIndex(s => (s.name || '').toLowerCase() === normName);
+
+    let changed = false;
+    if (existingIdx >= 0) {
+      list[existingIdx] = payload;
+      changed = true;
+    } else {
+      list.unshift(payload);
+      changed = true;
+    }
+
+    if (changed) {
+      localStorage.setItem(key, JSON.stringify(list));
+      if (state.isFinished) {
+        renderStudentGroupChart();
+      }
+    }
+  }
+}
+
+function startStudentCloudSync(roomPin) {
+  if (!roomPin) return;
+  const topic = `mf_room_${roomPin.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+
+  // 1. Initial history fetch from cloud
+  fetchCloudSubmissions(roomPin);
+
+  // 2. Real-time Server-Sent Events (SSE)
+  if (activeStudentEventSource) {
+    activeStudentEventSource.close();
+    activeStudentEventSource = null;
+  }
+
+  try {
+    const sse = new EventSource(`https://ntfy.sh/${topic}/sse`);
+    sse.onmessage = (event) => {
+      try {
+        const item = JSON.parse(event.data);
+        if (item.event === 'message' && item.message) {
+          const payload = JSON.parse(item.message);
+          handleStudentCloudEvent(payload);
+        }
+      } catch(e) {}
+    };
+    activeStudentEventSource = sse;
+  } catch(e) {}
+
+  // 3. Fallback recurring poll every 3.5 seconds
+  if (studentPollingInterval) clearInterval(studentPollingInterval);
+  studentPollingInterval = setInterval(() => {
+    fetchCloudSubmissions(roomPin);
+  }, 3500);
+}
+
+function stopStudentCloudSync() {
+  if (activeStudentEventSource) {
+    activeStudentEventSource.close();
+    activeStudentEventSource = null;
+  }
+  if (studentPollingInterval) {
+    clearInterval(studentPollingInterval);
+    studentPollingInterval = null;
+  }
+}
+
+function fetchCloudSubmissions(roomPin) {
+  if (!roomPin) return;
   const topic = `mf_room_${roomPin.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
   fetch(`https://ntfy.sh/${topic}/json?poll=1`)
     .then(r => r.text())
     .then(text => {
       if (!text || !text.trim()) return;
       const lines = text.trim().split('\n');
-      const key = `mindfocus_room_${roomPin}`;
-      let list = [];
-      try { list = JSON.parse(localStorage.getItem(key)) || []; } catch(e) { list = []; }
-      let updated = false;
       lines.forEach(line => {
         try {
           const item = JSON.parse(line);
           if (item.event === 'message' && item.message) {
-            const d = JSON.parse(item.message);
-            if (d.type === 'NEW_SUBMISSION' && !list.some(s => s.name === d.name && s.time === d.time)) {
-              list.unshift(d);
-              updated = true;
-            }
+            const payload = JSON.parse(item.message);
+            handleStudentCloudEvent(payload);
           }
         } catch(e) {}
       });
-      if (updated) {
-        localStorage.setItem(key, JSON.stringify(list));
-        renderStudentGroupChart();
-      }
     })
     .catch(() => {});
 }
@@ -1089,6 +1216,22 @@ function renderStudentGroupChart() {
     list = JSON.parse(localStorage.getItem(key)) || [];
   } catch(e) {
     list = [];
+  }
+
+  // Ensure current user's result is included in cohort list
+  const currentInList = list.some(s => (s.name || '').toLowerCase() === (state.studentName || '').toLowerCase());
+  if (!currentInList && state.studentName) {
+    try {
+      const res = calculateResults();
+      list.push({
+        name: state.studentName,
+        profileKey: res.dominantKey,
+        fomo: res.metrics.radar.sum,
+        impulse: res.metrics.brake.sum,
+        autopilot: res.metrics.autopilot.sum,
+        willpower: res.personalInsights.willpowerScore
+      });
+    } catch(e) {}
   }
 
   // If no submissions in room yet, show only current user's result
@@ -1316,10 +1459,14 @@ function showToast(message) {
 }
 
 function retakeQuiz() {
+  sessionStorage.removeItem('mindfocus_active_result');
+  stopStudentCloudSync();
   resultScreen.classList.add('hidden');
+  quizScreen.classList.add('hidden');
   welcomeScreen.classList.remove('hidden');
   state.currentQuestionIndex = 0;
   state.answers = {};
+  state.isFinished = false;
   stopTimer();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -1342,5 +1489,36 @@ document.addEventListener('DOMContentLoaded', () => {
     soundIcon.setAttribute('data-lucide', sound.enabled ? 'volume-2' : 'volume-x');
     soundIcon.className = sound.enabled ? 'w-4 h-4 text-slate-300' : 'w-4 h-4 text-rose-400';
   }
+
+  // Restore completed quiz session if user refreshed the page
+  const savedSessionRaw = sessionStorage.getItem('mindfocus_active_result');
+  if (savedSessionRaw) {
+    try {
+      const saved = JSON.parse(savedSessionRaw);
+      if (saved && saved.isFinished && saved.results) {
+        state.isFinished = true;
+        state.studentName = saved.studentName || '';
+        state.roomPin = saved.roomPin || '';
+        state.answers = saved.answers || {};
+
+        welcomeScreen.classList.add('hidden');
+        quizScreen.classList.add('hidden');
+        timerContainer.classList.add('hidden');
+        resultScreen.classList.remove('hidden');
+
+        if (state.roomPin) {
+          headerRoomBadge.classList.remove('hidden');
+          headerRoomBadge.classList.add('flex');
+          headerRoomText.textContent = `Комната: ${state.roomPin}`;
+        }
+
+        renderResultContent(saved.results);
+        startStudentCloudSync(state.roomPin);
+        lucide.createIcons();
+        return;
+      }
+    } catch(e) {}
+  }
+
   lucide.createIcons();
 });

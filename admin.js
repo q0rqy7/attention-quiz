@@ -12,6 +12,7 @@ const AdminState = {
   chartType: 'doughnut',
   submissions: [],
   joinedParticipants: [],
+  kickedStudents: [],
   chartInstance: null,
   theme: localStorage.getItem('mindfocus_theme') || 'dark',
 };
@@ -101,8 +102,10 @@ function setRoomPin(pin) {
   pinDisplay.textContent = pin;
   AdminState.submissions = [];
   AdminState.joinedParticipants = [];
+  AdminState.kickedStudents = [];
   saveLocalSubmissions();
   saveJoinedParticipants();
+  localStorage.setItem(`mindfocus_kicked_${pin}`, '[]');
   subscribeToCloudRoom(pin);
   renderAll();
 }
@@ -219,36 +222,60 @@ function fetchCloudHistory(topic, triggerToast = true) {
 function handleCloudMessage(payload, doRender = true) {
   if (!payload || !payload.type) return false;
 
+  const rawName = (payload.name || '').trim();
+  const lowerName = rawName.toLowerCase();
+
+  // Handle kick event from any coordinator device
+  if (payload.type === 'KICK_STUDENT') {
+    if (lowerName && !AdminState.kickedStudents.includes(lowerName)) {
+      AdminState.kickedStudents.push(lowerName);
+      localStorage.setItem(`mindfocus_kicked_${AdminState.currentRoomPin}`, JSON.stringify(AdminState.kickedStudents));
+    }
+    AdminState.submissions = AdminState.submissions.filter(s => (s.name || '').toLowerCase() !== lowerName);
+    AdminState.joinedParticipants = AdminState.joinedParticipants.filter(p => (p.name || '').toLowerCase() !== lowerName);
+    if (doRender) {
+      saveLocalSubmissions();
+      saveJoinedParticipants();
+      renderAll();
+    }
+    return true;
+  }
+
+  // If user was kicked, block them from re-entering/submitting
+  if (AdminState.kickedStudents.includes(lowerName)) {
+    return false;
+  }
+
   let changed = false;
 
   if (payload.type === 'STUDENT_JOINED') {
-    if (!AdminState.joinedParticipants.some(p => p.name === payload.name)) {
+    if (!AdminState.joinedParticipants.some(p => (p.name || '').toLowerCase() === lowerName)) {
       AdminState.joinedParticipants.push({
-        name: payload.name,
+        name: rawName,
         status: 'answering',
         time: payload.time || ''
       });
       changed = true;
       if (doRender) {
-        showToast(`Студент подключился: ${payload.name}`);
+        showToast(`Студент подключился: ${rawName}`);
         renderAll();
       }
     }
   } else if (payload.type === 'NEW_SUBMISSION') {
     // Check if already in submissions
-    const existing = AdminState.submissions.find(s => s.name === payload.name && s.time === payload.time);
+    const existing = AdminState.submissions.find(s => (s.name || '').toLowerCase() === lowerName);
     if (!existing) {
       AdminState.submissions.unshift(payload);
       changed = true;
 
       // Update in joinedParticipants lobby
-      const joinedItem = AdminState.joinedParticipants.find(p => p.name === payload.name);
+      const joinedItem = AdminState.joinedParticipants.find(p => (p.name || '').toLowerCase() === lowerName);
       if (joinedItem) {
         joinedItem.status = 'completed';
         joinedItem.profileKey = payload.profileKey;
       } else {
         AdminState.joinedParticipants.push({
-          name: payload.name,
+          name: rawName,
           status: 'completed',
           profileKey: payload.profileKey,
           time: payload.time
@@ -256,7 +283,7 @@ function handleCloudMessage(payload, doRender = true) {
       }
 
       if (doRender) {
-        showToast(`Сдал тест: ${payload.name} (${ARCHETYPE_META[payload.profileKey]?.title || 'Смешанный'})`);
+        showToast(`Сдал тест: ${rawName} (${ARCHETYPE_META[payload.profileKey]?.title || 'Смешанный'})`);
         renderAll();
       }
     }
@@ -264,6 +291,48 @@ function handleCloudMessage(payload, doRender = true) {
 
   return changed;
 }
+
+window.kickStudent = function(rawName) {
+  const studentName = decodeURIComponent(rawName);
+  if (!confirm(`Вы действительно хотите удалить участника "${studentName}" из этой сессии?`)) {
+    return;
+  }
+
+  const lowerName = studentName.toLowerCase();
+  if (!AdminState.kickedStudents.includes(lowerName)) {
+    AdminState.kickedStudents.push(lowerName);
+    localStorage.setItem(`mindfocus_kicked_${AdminState.currentRoomPin}`, JSON.stringify(AdminState.kickedStudents));
+  }
+
+  AdminState.submissions = AdminState.submissions.filter(s => (s.name || '').toLowerCase() !== lowerName);
+  AdminState.joinedParticipants = AdminState.joinedParticipants.filter(p => (p.name || '').toLowerCase() !== lowerName);
+
+  saveLocalSubmissions();
+  saveJoinedParticipants();
+  renderAll();
+
+  const kickEvent = {
+    type: 'KICK_STUDENT',
+    name: studentName,
+    room: AdminState.currentRoomPin,
+    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  };
+
+  // 1. BroadcastChannel (same browser profiles)
+  if (roomChannel) {
+    try { roomChannel.postMessage(kickEvent); } catch(e) {}
+  }
+
+  // 2. Cloud ntfy.sh (cross-device push to students on smartphones/tablets)
+  const topic = getCloudTopic(AdminState.currentRoomPin);
+  fetch(`https://ntfy.sh/${topic}`, {
+    method: 'POST',
+    body: JSON.stringify(kickEvent),
+    headers: { 'Title': 'Kick Student', 'Priority': '3' }
+  }).catch(() => {});
+
+  showToast(`Участник "${studentName}" удален из сессии`);
+};
 
 function loadLocalSubmissions() {
   const raw = localStorage.getItem(getStorageKey());
@@ -278,6 +347,13 @@ function loadLocalSubmissions() {
     try { AdminState.joinedParticipants = JSON.parse(rawJoined) || []; } catch(e) { AdminState.joinedParticipants = []; }
   } else {
     AdminState.joinedParticipants = [];
+  }
+
+  const rawKicked = localStorage.getItem(`mindfocus_kicked_${AdminState.currentRoomPin}`);
+  if (rawKicked) {
+    try { AdminState.kickedStudents = JSON.parse(rawKicked) || []; } catch(e) { AdminState.kickedStudents = []; }
+  } else {
+    AdminState.kickedStudents = [];
   }
 }
 
@@ -465,6 +541,7 @@ function renderAll() {
   } else {
     const displayList = joined.length > 0 ? joined : list;
     lobbyChips.innerHTML = displayList.map(p => {
+      const encName = encodeURIComponent(p.name);
       if (p.status === 'completed' || p.profileKey) {
         const meta = ARCHETYPE_META[p.profileKey] || ARCHETYPE_META.mixed;
         return `
@@ -472,6 +549,9 @@ function renderAll() {
             <span class="w-2 h-2 rounded-full" style="background-color: ${meta.color}"></span>
             <span class="font-bold">${p.name}</span>
             <span class="text-[10px] text-slate-400">(${meta.title})</span>
+            <button type="button" onclick="kickStudent('${encName}')" title="Удалить из сессии" class="ml-1 text-slate-400 hover:text-rose-400 p-0.5 rounded transition-colors inline-flex items-center justify-center">
+              <i data-lucide="x" class="w-3 h-3"></i>
+            </button>
           </div>
         `;
       } else {
@@ -480,6 +560,9 @@ function renderAll() {
             <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
             <span class="font-bold">${p.name}</span>
             <span class="text-[10px] text-amber-400/80">(проходит...)</span>
+            <button type="button" onclick="kickStudent('${encName}')" title="Удалить из сессии" class="ml-1 text-amber-400/70 hover:text-rose-400 p-0.5 rounded transition-colors inline-flex items-center justify-center">
+              <i data-lucide="x" class="w-3 h-3"></i>
+            </button>
           </div>
         `;
       }
@@ -548,7 +631,7 @@ function renderStudentsTable() {
   if (filtered.length === 0) {
     studentsTbody.innerHTML = `
       <tr>
-        <td colspan="9" class="py-10 text-center text-slate-400 italic">
+        <td colspan="10" class="py-10 text-center text-slate-400 italic">
           Пока никто не сдал тест в этой сессии.<br>
           <span class="text-xs text-indigo-400 mt-1 inline-block">Отправьте студентам код <strong>${AdminState.currentRoomPin}</strong></span>
         </td>
@@ -559,6 +642,7 @@ function renderStudentsTable() {
 
   studentsTbody.innerHTML = filtered.map((s, idx) => {
     const meta = ARCHETYPE_META[s.profileKey] || ARCHETYPE_META.mixed;
+    const encName = encodeURIComponent(s.name);
     return `
       <tr class="hover:bg-slate-800/30 transition-colors">
         <td class="py-3 px-4 font-mono text-slate-400 font-bold">${idx + 1}</td>
@@ -574,7 +658,14 @@ function renderStudentsTable() {
         <td class="py-3 px-4 font-mono">${s.autopilot || '—'} / 18</td>
         <td class="py-3 px-4 font-mono">${s.willpower || '—'} / 5</td>
         <td class="py-3 px-4 text-slate-400 text-[11px] max-w-xs truncate">${s.trigger || '—'}</td>
-        <td class="py-3 px-4 text-right font-mono text-slate-400 text-[11px]">${s.time || '—'}</td>
+        <td class="py-3 px-4 font-mono text-slate-400 text-[11px]">${s.time || '—'}</td>
+        <td class="py-3 px-4 text-center">
+          <button type="button" onclick="kickStudent('${encName}')" title="Удалить из сессии"
+            class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 text-xs font-semibold border border-rose-500/30 transition-all hover:scale-105 active:scale-95">
+            <i data-lucide="user-x" class="w-3.5 h-3.5"></i>
+            <span>Выгнать</span>
+          </button>
+        </td>
       </tr>
     `;
   }).join('');
@@ -587,8 +678,10 @@ clearSessionBtn.addEventListener('click', () => {
   if (confirm(`Вы уверены, что хотите очистить результаты сессии ${AdminState.currentRoomPin}?`)) {
     AdminState.submissions = [];
     AdminState.joinedParticipants = [];
+    AdminState.kickedStudents = [];
     saveLocalSubmissions();
     saveJoinedParticipants();
+    localStorage.removeItem(`mindfocus_kicked_${AdminState.currentRoomPin}`);
     renderAll();
     showToast('Результаты сессии очищены');
   }
