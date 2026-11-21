@@ -1,6 +1,8 @@
 /* ========================================================
    MindFocus Modern Quiz Styles
-   Supports: Dark Neo-Glassmorphism & Clean Apple/Notion Light
+   Supports: 
+   - Dark Neo-Glassmorphism (Cyber Sleek)
+   - Apple Liquid Glass Light (Ultra-clean, Frosted Glass, No dark mixtures)
    ======================================================== */
 
 :root {
@@ -10,73 +12,131 @@
 /* Base Smooth Transitions */
 * {
   -webkit-tap-highlight-color: transparent;
+  box-sizing: border-box;
 }
 
 /* ========================================================
-   Dark Neo-Glassmorphism Styles (Default)
+   1. Dark Neo-Glassmorphism Styles (Default)
    ======================================================== */
+.dark body {
+  background-color: #030712;
+  color: #f8fafc;
+}
+
 .dark .glass-card {
-  background: rgba(15, 23, 42, 0.7);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: rgba(15, 23, 42, 0.72);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.5), inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
+  box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.6), inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
 }
 
 .dark .option-card {
   background: rgba(30, 41, 59, 0.45);
-  border: 1px solid rgba(148, 163, 184, 0.12);
+  border: 1px solid rgba(148, 163, 184, 0.15);
   transition: all var(--transition-speed) cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .dark .option-card:hover {
   background: rgba(30, 41, 59, 0.85);
-  border-color: rgba(99, 102, 241, 0.4);
+  border-color: rgba(99, 102, 241, 0.5);
   transform: translateY(-2px);
-  box-shadow: 0 8px 20px -6px rgba(99, 102, 241, 0.2);
+  box-shadow: 0 8px 20px -6px rgba(99, 102, 241, 0.25);
 }
 
 .dark .option-card.selected {
-  background: rgba(99, 102, 241, 0.18);
+  background: rgba(99, 102, 241, 0.2);
   border-color: #6366f1;
-  box-shadow: 0 0 20px rgba(99, 102, 241, 0.35);
+  box-shadow: 0 0 20px rgba(99, 102, 241, 0.4);
+}
+
+.dark .scale-button {
+  background: rgba(30, 41, 59, 0.6);
+  border: 1.5px solid rgba(148, 163, 184, 0.2);
+  color: #cbd5e1;
+}
+
+.dark .scale-button:hover {
+  border-color: #818cf8;
+  color: #ffffff;
+  background: rgba(99, 102, 241, 0.2);
+}
+
+.dark .scale-button.selected {
+  background: #6366f1 !important;
+  border-color: #818cf8 !important;
+  color: #ffffff !important;
+  box-shadow: 0 0 20px rgba(99, 102, 241, 0.5) !important;
 }
 
 /* ========================================================
-   Clean Minimalist Light Mode Styles (Apple / Notion Aesthetic)
+   2. Apple Liquid Glass Light Mode (Frosted Translucent Aesthetics)
    ======================================================== */
 html:not(.dark) {
   color-scheme: light;
 }
 
 html:not(.dark) body {
-  background-color: #f8fafc;
+  background: radial-gradient(at 0% 0%, rgba(224, 231, 255, 0.7) 0px, transparent 55%),
+              radial-gradient(at 100% 100%, rgba(207, 250, 254, 0.6) 0px, transparent 55%),
+              radial-gradient(at 100% 0%, rgba(243, 232, 255, 0.5) 0px, transparent 50%),
+              #f8fafc;
   color: #0f172a;
 }
 
+/* Liquid Orbs in Light Mode */
 html:not(.dark) #orb-1 {
-  background-color: rgba(99, 102, 241, 0.08);
+  background-color: rgba(99, 102, 241, 0.16);
+  filter: blur(80px);
 }
 html:not(.dark) #orb-2 {
-  background-color: rgba(147, 51, 234, 0.05);
+  background-color: rgba(168, 85, 247, 0.14);
+  filter: blur(80px);
 }
 html:not(.dark) #orb-3 {
-  background-color: rgba(6, 182, 212, 0.06);
+  background-color: rgba(6, 182, 212, 0.15);
+  filter: blur(80px);
 }
 
+/* Apple Liquid Frosted Glass Cards */
+html:not(.dark) .glass-card {
+  background: rgba(255, 255, 255, 0.75) !important;
+  backdrop-filter: blur(32px) saturate(190%) !important;
+  -webkit-backdrop-filter: blur(32px) saturate(190%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.85) !important;
+  box-shadow: 0 20px 40px -15px rgba(15, 23, 42, 0.06), 
+              0 0 0 1px rgba(226, 232, 240, 0.7), 
+              inset 0 1px 2px rgba(255, 255, 255, 0.95) !important;
+  color: #0f172a !important;
+}
+
+/* Header & Controls in Light Mode */
+html:not(.dark) header button,
+html:not(.dark) #quiz-timer-container {
+  background: rgba(255, 255, 255, 0.85) !important;
+  backdrop-filter: blur(16px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(180%) !important;
+  border: 1px solid rgba(203, 213, 225, 0.8) !important;
+  color: #1e293b !important;
+  box-shadow: 0 4px 12px -2px rgba(0, 0, 0, 0.04) !important;
+}
+
+html:not(.dark) header button:hover {
+  background: #ffffff !important;
+  border-color: #94a3b8 !important;
+  color: #0f172a !important;
+  box-shadow: 0 6px 16px -2px rgba(0, 0, 0, 0.08) !important;
+}
+
+html:not(.dark) #timer-display {
+  color: #0f172a !important;
+}
+
+/* Typography in Light Mode */
 html:not(.dark) .title-gradient {
   background: linear-gradient(135deg, #1e1b4b 0%, #4338ca 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
-}
-
-html:not(.dark) .glass-card {
-  background: #ffffff !important;
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
-  border-color: #e2e8f0 !important;
-  box-shadow: 0 20px 30px -10px rgba(0, 0, 0, 0.04), 0 4px 6px -2px rgba(0, 0, 0, 0.02) !important;
-  color: #0f172a !important;
 }
 
 html:not(.dark) .glass-card h1,
@@ -90,92 +150,149 @@ html:not(.dark) .text-slate-200 {
 
 html:not(.dark) .text-slate-300,
 html:not(.dark) .text-slate-400 {
-  color: #475569 !important;
+  color: #334155 !important;
 }
 
+html:not(.dark) .text-slate-500 {
+  color: #64748b !important;
+}
+
+/* Replace all dark background pills/boxes with Apple Liquid Frosting */
 html:not(.dark) .bg-slate-900\/70,
+html:not(.dark) .bg-slate-900\/60,
+html:not(.dark) .bg-slate-900\/50,
+html:not(.dark) .bg-slate-900\/40,
+html:not(.dark) .bg-slate-800\/80,
+html:not(.dark) .bg-slate-800\/60,
 html:not(.dark) .bg-slate-800\/40,
 html:not(.dark) .bg-slate-800\/30,
-html:not(.dark) .bg-slate-800\/60 {
-  background-color: #f1f5f9 !important;
-  border-color: #e2e8f0 !important;
-}
-
+html:not(.dark) .bg-slate-800\/20,
 html:not(.dark) .bg-slate-800 {
-  background-color: #e2e8f0 !important;
+  background: rgba(255, 255, 255, 0.82) !important;
+  border: 1px solid rgba(226, 232, 240, 0.9) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02) !important;
 }
 
+/* Option Cards (Questions) in Light Mode */
 html:not(.dark) .option-card {
-  background: #f8fafc;
-  border: 1.5px solid #e2e8f0;
-  color: #1e293b;
-  transition: all var(--transition-speed) ease;
+  background: rgba(255, 255, 255, 0.8) !important;
+  border: 1.5px solid rgba(226, 232, 240, 0.9) !important;
+  color: #1e293b !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02) !important;
 }
 
 html:not(.dark) .option-card:hover {
-  background: #f1f5f9;
-  border-color: #818cf8;
+  background: #ffffff !important;
+  border-color: #6366f1 !important;
   transform: translateY(-2px);
-  box-shadow: 0 8px 16px -4px rgba(99, 102, 241, 0.12);
+  box-shadow: 0 8px 24px -4px rgba(99, 102, 241, 0.16) !important;
 }
 
 html:not(.dark) .option-card.selected {
-  background: #eef2ff !important;
+  background: rgba(238, 242, 255, 0.9) !important;
   border-color: #4f46e5 !important;
-  box-shadow: 0 0 0 1px #4f46e5, 0 8px 16px -4px rgba(79, 70, 229, 0.18) !important;
+  box-shadow: 0 0 0 2px #4f46e5, 0 8px 24px -4px rgba(79, 70, 229, 0.22) !important;
 }
 
-html:not(.dark) .option-card .bg-slate-800\/80 {
-  background-color: #e2e8f0 !important;
-  border-color: #cbd5e1 !important;
-  color: #475569 !important;
+html:not(.dark) .option-card .opt-icon-box {
+  background: #e0e7ff !important;
+  border: 1px solid #c7d2fe !important;
+  color: #4338ca !important;
 }
 
-html:not(.dark) header button,
-html:not(.dark) #quiz-timer-container {
+html:not(.dark) .option-card.selected .opt-icon-box {
+  background: #4f46e5 !important;
+  color: #ffffff !important;
+  border-color: #4338ca !important;
+}
+
+/* Scale Rating Buttons (1..5 and 1..6) in Light Mode */
+html:not(.dark) .scale-button {
+  background: rgba(255, 255, 255, 0.85) !important;
+  border: 1.5px solid #cbd5e1 !important;
+  color: #1e293b !important;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.02) !important;
+}
+
+html:not(.dark) .scale-button:hover {
   background: #ffffff !important;
-  border-color: #e2e8f0 !important;
-  color: #334155 !important;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.03);
+  border-color: #6366f1 !important;
+  color: #4338ca !important;
+  box-shadow: 0 6px 16px -2px rgba(99, 102, 241, 0.18) !important;
 }
 
-html:not(.dark) header button:hover {
+html:not(.dark) .scale-button.selected {
+  background: #4f46e5 !important;
+  border-color: #4338ca !important;
+  color: #ffffff !important;
+  box-shadow: 0 4px 14px rgba(79, 70, 229, 0.35) !important;
+}
+
+/* Navigation Buttons in Light Mode */
+html:not(.dark) #prev-question-btn,
+html:not(.dark) #retake-quiz-btn,
+html:not(.dark) #copy-result-btn,
+html:not(.dark) .btn-liquid-secondary {
+  background: rgba(255, 255, 255, 0.85) !important;
+  border: 1.5px solid #cbd5e1 !important;
+  color: #1e293b !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03) !important;
+}
+
+html:not(.dark) #prev-question-btn:hover,
+html:not(.dark) #retake-quiz-btn:hover,
+html:not(.dark) #copy-result-btn:hover,
+html:not(.dark) .btn-liquid-secondary:hover {
+  background: #ffffff !important;
+  border-color: #94a3b8 !important;
   color: #0f172a !important;
-  border-color: #cbd5e1 !important;
+  box-shadow: 0 6px 16px -2px rgba(0, 0, 0, 0.06) !important;
 }
 
-html:not(.dark) #timer-display {
-  color: #0f172a !important;
-}
-
-html:not(.dark) #prev-question-btn {
-  background: #f8fafc !important;
-  border-color: #e2e8f0 !important;
-  color: #475569 !important;
-}
-
-html:not(.dark) #prev-question-btn:hover {
-  background: #f1f5f9 !important;
-  color: #0f172a !important;
-}
-
-html:not(.dark) #retake-quiz-btn {
-  background-color: #f8fafc !important;
-  border-color: #cbd5e1 !important;
-  color: #334155 !important;
-}
-
-html:not(.dark) #retake-quiz-btn:hover {
-  background-color: #f1f5f9 !important;
-  color: #0f172a !important;
+/* Progress bar in Light Mode */
+html:not(.dark) #progress-track {
+  background: rgba(226, 232, 240, 0.9) !important;
+  border: 1px solid rgba(203, 213, 225, 0.7) !important;
 }
 
 html:not(.dark) #quiz-progress-bar {
-  background: linear-gradient(90deg, #4f46e5, #06b6d4);
+  background: linear-gradient(90deg, #4f46e5, #06b6d4) !important;
+}
+
+/* Chart Switcher Buttons */
+.chart-type-pill {
+  transition: all 0.2s ease;
+}
+
+.dark .chart-type-pill.active {
+  background: #6366f1;
+  color: #ffffff;
+  border-color: #818cf8;
+  box-shadow: 0 0 16px rgba(99, 102, 241, 0.4);
+}
+
+html:not(.dark) .chart-type-pill.active {
+  background: #4f46e5 !important;
+  color: #ffffff !important;
+  border-color: #4338ca !important;
+  box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3) !important;
+}
+
+/* Footer border in Light Mode */
+html:not(.dark) footer {
+  border-color: rgba(226, 232, 240, 0.9) !important;
+  color: #64748b !important;
+}
+
+/* Toast in Light Mode */
+html:not(.dark) #toast {
+  background: rgba(15, 23, 42, 0.95) !important;
+  border-color: #4f46e5 !important;
+  color: #ffffff !important;
 }
 
 /* ========================================================
-   Quiz Step Transition Animation
+   Step Transitions & Animations
    ======================================================== */
 .quiz-step-fade-in {
   animation: stepFadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
@@ -192,24 +309,6 @@ html:not(.dark) #quiz-progress-bar {
   }
 }
 
-.quiz-step-fade-out {
-  animation: stepFadeOut 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-}
-
-@keyframes stepFadeOut {
-  from {
-    opacity: 1;
-    transform: translateY(0);
-  }
-  to {
-    opacity: 0;
-    transform: translateY(-8px);
-  }
-}
-
-/* ========================================================
-   Scale Rating Pill Buttons (1..5 and 1..6)
-   ======================================================== */
 .scale-button {
   transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
@@ -222,47 +321,6 @@ html:not(.dark) #quiz-progress-bar {
   transform: scale(0.96);
 }
 
-.dark .scale-button {
-  background: rgba(30, 41, 59, 0.6);
-  border: 1.5px solid rgba(148, 163, 184, 0.2);
-  color: #cbd5e1;
-}
-
-.dark .scale-button:hover {
-  border-color: #818cf8;
-  color: #ffffff;
-  background: rgba(99, 102, 241, 0.15);
-}
-
-.dark .scale-button.selected {
-  background: #6366f1 !important;
-  border-color: #818cf8 !important;
-  color: #ffffff !important;
-  box-shadow: 0 0 20px rgba(99, 102, 241, 0.5) !important;
-}
-
-html:not(.dark) .scale-button {
-  background: #f8fafc;
-  border: 1.5px solid #cbd5e1;
-  color: #334155;
-}
-
-html:not(.dark) .scale-button:hover {
-  border-color: #6366f1;
-  color: #1e1b4b;
-  background: #eef2ff;
-}
-
-html:not(.dark) .scale-button.selected {
-  background: #4f46e5 !important;
-  border-color: #4338ca !important;
-  color: #ffffff !important;
-  box-shadow: 0 4px 12px rgba(79, 70, 229, 0.35) !important;
-}
-
-/* ========================================================
-   Timer Urgent Alert Styling
-   ======================================================== */
 .timer-warning {
   border-color: #f97316 !important;
   color: #f97316 !important;

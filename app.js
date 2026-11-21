@@ -1,6 +1,7 @@
 /**
  * MindFocus Quiz Application
  * Modern attention & focus digital profiling quiz
+ * Supports: Solo mode, Quizizz-style room lobby, Chart.js group analytics
  */
 
 // ========================================================
@@ -75,6 +76,9 @@ class SoundController {
 
 const sound = new SoundController();
 
+// BroadcastChannel for cross-tab realtime sync with Admin Dashboard
+const roomChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('mindfocus_room_sync') : null;
+
 // ========================================================
 // 2. Quiz Questions Dataset
 // ========================================================
@@ -109,7 +113,7 @@ const QUIZ_QUESTIONS = [
     type: 'scale',
     min: 1,
     max: 5,
-    category: 'fomo', // Part of Result A
+    category: 'fomo',
     title: 'Когда в соцсети видно, что друг «онлайн», но не отвечает — невольно возникает мысль: а вдруг было сказано что-то не то?',
     minLabel: 'Совсем не про меня',
     maxLabel: 'Точно про меня'
@@ -119,7 +123,7 @@ const QUIZ_QUESTIONS = [
     type: 'scale',
     min: 1,
     max: 5,
-    category: 'fomo', // Part of Result A
+    category: 'fomo',
     title: 'Если какое-то время не заходить в соцсеть — появляется беспокойство, что пропущены смешные мемы или важный «движ» в чате.',
     minLabel: 'Совсем не про меня',
     maxLabel: 'Точно про меня'
@@ -129,7 +133,7 @@ const QUIZ_QUESTIONS = [
     type: 'scale',
     min: 1,
     max: 5,
-    category: 'fomo', // Part of Result A
+    category: 'fomo',
     title: 'Часто кажется: у других в соцсетях жизнь насыщеннее, и если не смотреть — «отстаёшь».',
     minLabel: 'Совсем не про меня',
     maxLabel: 'Точно про меня'
@@ -149,7 +153,7 @@ const QUIZ_QUESTIONS = [
     type: 'scale',
     min: 1,
     max: 5,
-    category: 'impulse', // Part of Result B
+    category: 'impulse',
     title: 'Трудно избавляться от вредных привычек.',
     minLabel: 'Совсем не про меня',
     maxLabel: 'Точно про меня'
@@ -159,7 +163,7 @@ const QUIZ_QUESTIONS = [
     type: 'scale',
     min: 1,
     max: 5,
-    category: 'impulse', // Part of Result B
+    category: 'impulse',
     title: 'Хотелось бы иметь больше силы воли.',
     minLabel: 'Совсем не про меня',
     maxLabel: 'Точно про меня'
@@ -169,7 +173,7 @@ const QUIZ_QUESTIONS = [
     type: 'scale',
     min: 1,
     max: 5,
-    category: 'impulse', // Part of Result B
+    category: 'impulse',
     title: 'Часто действую импульсивно, не обдумав варианты.',
     minLabel: 'Совсем не про меня',
     maxLabel: 'Точно про меня'
@@ -179,7 +183,7 @@ const QUIZ_QUESTIONS = [
     type: 'scale',
     min: 1,
     max: 6,
-    category: 'autopilot', // Part of Result C
+    category: 'autopilot',
     title: 'Замечаю, что делаю что-то на автомате или думаю о другом, и прихожу в себя, только когда кто-то окликнет.',
     minLabel: 'Почти никогда',
     maxLabel: 'Почти всегда'
@@ -189,7 +193,7 @@ const QUIZ_QUESTIONS = [
     type: 'scale',
     min: 1,
     max: 6,
-    category: 'autopilot', // Part of Result C
+    category: 'autopilot',
     title: 'Листаю соцсеть, пальцы скользят, а голова пустая или думает о постороннем.',
     minLabel: 'Почти никогда',
     maxLabel: 'Почти всегда'
@@ -199,7 +203,7 @@ const QUIZ_QUESTIONS = [
     type: 'scale',
     min: 1,
     max: 6,
-    category: 'autopilot', // Part of Result C
+    category: 'autopilot',
     title: 'Машинально беру телефон и открываю соцсеть, когда ем / иду / моюсь.',
     minLabel: 'Почти никогда',
     maxLabel: 'Почти всегда'
@@ -228,7 +232,6 @@ const DIAGNOSIS_DATA = {
     badge: '🔴 Тревожный радар',
     colorClass: 'text-rose-500 dark:text-rose-400',
     bgBorderClass: 'border-rose-500/40 bg-rose-500/10',
-    glowClass: 'shadow-glow-red',
     accentColor: '#ef4444',
     diagnosis: 'Твоё внимание крадёт не сам телефон, а страх упустить что-то важное.',
     reason: 'Мозг воспринимает «не проверил» как угрозу. Ты открываешь соцсеть не чтобы отдохнуть, а чтобы убедиться, что всё в порядке.',
@@ -244,7 +247,6 @@ const DIAGNOSIS_DATA = {
     badge: '🟠 Слабый тормоз',
     colorClass: 'text-amber-500 dark:text-amber-400',
     bgBorderClass: 'border-amber-500/40 bg-amber-500/10',
-    glowClass: 'shadow-glow-orange',
     accentColor: '#f97316',
     diagnosis: 'Ты видишь проблему, но рука быстрее головы.',
     reason: 'Привычка срабатывает автоматически. Сила воли тут почти не работает, потому что решение принимается за долю секунды до того, как ты успеваешь подумать.',
@@ -260,7 +262,6 @@ const DIAGNOSIS_DATA = {
     badge: '🟡 Автопилот',
     colorClass: 'text-yellow-500 dark:text-yellow-400',
     bgBorderClass: 'border-yellow-500/40 bg-yellow-500/10',
-    glowClass: 'shadow-glow-yellow',
     accentColor: '#eab308',
     diagnosis: 'Ты не зависишь от контента — ты просто не замечаешь момента, когда рука тянется к телефону.',
     reason: 'Действие отработано до автоматизма. Сознание подключается уже тогда, когда ты листаешь ленту.',
@@ -276,7 +277,6 @@ const DIAGNOSIS_DATA = {
     badge: '🟢 Смешанный',
     colorClass: 'text-emerald-500 dark:text-emerald-400',
     bgBorderClass: 'border-emerald-500/40 bg-emerald-500/10',
-    glowClass: 'shadow-glow-emerald',
     accentColor: '#10b981',
     diagnosis: 'У тебя неплохой контроль, но есть слабые зоны.',
     reason: 'Твой главный враг — не зависимость, а отсутствие четких правил. Ты залипаешь, когда сбивается привычный ритм.',
@@ -293,10 +293,12 @@ const DIAGNOSIS_DATA = {
 // ========================================================
 const state = {
   currentQuestionIndex: 0,
-  answers: {}, // questionId -> value (number for scale, option index for single)
-  timerSeconds: 300, // 5 minutes
+  answers: {},
+  timerSeconds: 300,
   timerInterval: null,
   isFinished: false,
+  studentName: '',
+  roomPin: '',
   theme: localStorage.getItem('mindfocus_theme') || 'dark',
 };
 
@@ -316,8 +318,16 @@ const themeToggleBtn = document.getElementById('theme-toggle-btn');
 const soundToggleBtn = document.getElementById('sound-toggle-btn');
 const soundIcon = document.getElementById('sound-icon');
 const startBtn = document.getElementById('start-quiz-btn');
+const studentNameInput = document.getElementById('student-name-input');
+const roomPinInput = document.getElementById('room-pin-input');
+const headerRoomBadge = document.getElementById('header-room-badge');
+const headerRoomText = document.getElementById('header-room-text');
 const toast = document.getElementById('toast');
 const toastMessage = document.getElementById('toast-message');
+
+// Chart instance for Student Group Statistics
+let studentChartInstance = null;
+let currentStudentChartType = 'doughnut';
 
 // ========================================================
 // 5. Theme Initialization & Toggle
@@ -330,18 +340,13 @@ function applyTheme(theme) {
 
   if (theme === 'dark') {
     html.classList.add('dark');
-    if (themeIcon) {
-      themeIcon.setAttribute('data-lucide', 'sun');
-      themeIcon.className = 'w-4 h-4 text-amber-300';
-    }
+    if (themeIcon) themeIcon.className = 'w-4 h-4 text-amber-300';
   } else {
     html.classList.remove('dark');
-    if (themeIcon) {
-      themeIcon.setAttribute('data-lucide', 'moon');
-      themeIcon.className = 'w-4 h-4 text-slate-700';
-    }
+    if (themeIcon) themeIcon.className = 'w-4 h-4 text-slate-700';
   }
   lucide.createIcons();
+  if (studentChartInstance) renderStudentGroupChart();
 }
 
 themeToggleBtn.addEventListener('click', () => {
@@ -350,7 +355,6 @@ themeToggleBtn.addEventListener('click', () => {
   applyTheme(newTheme);
 });
 
-// Sound Toggle
 soundToggleBtn.addEventListener('click', () => {
   const isEnabled = sound.toggle();
   soundIcon.setAttribute('data-lucide', isEnabled ? 'volume-2' : 'volume-x');
@@ -358,6 +362,24 @@ soundToggleBtn.addEventListener('click', () => {
   lucide.createIcons();
   if (isEnabled) sound.playClick();
 });
+
+// Check URL query parameters for room PIN
+function parseUrlRoomPin() {
+  const params = new URLSearchParams(window.location.search);
+  const pin = params.get('pin');
+  if (pin) {
+    state.roomPin = pin.trim();
+    if (roomPinInput) roomPinInput.value = state.roomPin;
+    headerRoomBadge.classList.remove('hidden');
+    headerRoomBadge.classList.add('flex');
+    headerRoomText.textContent = `Комната: ${state.roomPin}`;
+    const badge = document.getElementById('session-status-badge');
+    if (badge) {
+      badge.textContent = `Подключено: ${state.roomPin}`;
+      badge.className = 'text-[11px] font-bold text-emerald-400';
+    }
+  }
+}
 
 // ========================================================
 // 6. Timer Management (5 Minutes Countdown)
@@ -412,11 +434,21 @@ function handleTimeExpired() {
 // ========================================================
 function startQuiz() {
   sound.playClick();
+
+  // Save student credentials
+  state.studentName = (studentNameInput?.value.trim()) || 'Студент ' + Math.floor(10 + Math.random() * 90);
+  state.roomPin = (roomPinInput?.value.trim().toUpperCase()) || state.roomPin || '582-104';
+
   welcomeScreen.classList.add('hidden');
   quizScreen.classList.remove('hidden');
   state.currentQuestionIndex = 0;
   state.answers = {};
   state.isFinished = false;
+
+  headerRoomBadge.classList.remove('hidden');
+  headerRoomBadge.classList.add('flex');
+  headerRoomText.textContent = `Комната: ${state.roomPin}`;
+
   startTimer();
   renderQuestion(state.currentQuestionIndex);
 }
@@ -427,15 +459,11 @@ function renderQuestion(index) {
   const currentNum = index + 1;
   const pct = Math.round((currentNum / total) * 100);
 
-  // Update header progress
   currentQNum.textContent = currentNum;
   progressPercent.textContent = `${pct}%`;
   progressBar.style.width = `${pct}%`;
-
-  // Update Back button state
   prevBtn.disabled = index === 0;
 
-  // Render question card
   questionContainer.className = 'quiz-step-fade-in flex-1';
 
   let html = `
@@ -462,12 +490,12 @@ function renderQuestion(index) {
           onclick="handleSingleChoice(${q.id}, ${optIdx})"
           class="option-card w-full text-left p-4 rounded-2xl flex items-center justify-between gap-4 cursor-pointer ${isSelected ? 'selected' : ''}">
           <div class="flex items-center gap-3.5">
-            <div class="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 text-slate-300 font-bold text-xs ${isSelected ? 'bg-indigo-600 text-white shadow-glow-indigo' : 'bg-slate-800/80 border border-slate-700/60'}">
+            <div class="opt-icon-box w-9 h-9 rounded-xl flex items-center justify-center shrink-0 text-slate-300 font-bold text-xs ${isSelected ? 'bg-indigo-600 text-white shadow-glow-indigo' : 'bg-slate-800/80 border border-slate-700/60'}">
               <i data-lucide="${opt.icon || 'circle'}" class="w-4 h-4"></i>
             </div>
             <span class="text-sm font-medium leading-relaxed">${opt.text}</span>
           </div>
-          <div class="w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 ${isSelected ? 'border-indigo-500 bg-indigo-500' : 'border-slate-600'}">
+          <div class="w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 ${isSelected ? 'border-indigo-500 bg-indigo-500' : 'border-slate-400'}">
             ${isSelected ? '<div class="w-2 h-2 rounded-full bg-white"></div>' : ''}
           </div>
         </button>
@@ -477,7 +505,6 @@ function renderQuestion(index) {
   } else if (q.type === 'scale') {
     html += `
       <div class="py-4">
-        <!-- Scale Range Buttons -->
         <div style="display: grid; grid-template-columns: repeat(${q.max}, minmax(0, 1fr)); gap: 0.5rem;" class="mb-4">
     `;
     for (let val = q.min; val <= q.max; val++) {
@@ -492,7 +519,6 @@ function renderQuestion(index) {
     }
     html += `
         </div>
-        <!-- Min and Max Labels -->
         <div class="flex items-center justify-between text-xs font-medium text-slate-400 px-1 pt-1">
           <span class="flex items-center gap-1.5"><i data-lucide="arrow-left" class="w-3.5 h-3.5"></i> ${q.min} — ${q.minLabel}</span>
           <span class="flex items-center gap-1.5">${q.max} — ${q.maxLabel} <i data-lucide="arrow-right" class="w-3.5 h-3.5"></i></span>
@@ -503,8 +529,6 @@ function renderQuestion(index) {
 
   questionContainer.innerHTML = html;
   lucide.createIcons();
-
-  // Next button activation
   updateNextButtonState();
 }
 
@@ -516,7 +540,7 @@ function updateNextButtonState() {
   const hint = document.getElementById('auto-advance-hint');
   if (hint) {
     hint.textContent = hasAnswer ? 'Ответ выбран • Нажмите «Далее»' : 'Выберите вариант';
-    hint.className = hasAnswer ? 'text-[11px] text-indigo-400 font-semibold hidden sm:inline-block' : 'text-[11px] text-slate-500 hidden sm:inline-block';
+    hint.className = hasAnswer ? 'text-[11px] text-indigo-400 font-semibold hidden sm:inline-block' : 'text-[11px] text-slate-400 hidden sm:inline-block';
   }
 
   const isLast = state.currentQuestionIndex === QUIZ_QUESTIONS.length - 1;
@@ -526,6 +550,7 @@ function updateNextButtonState() {
   lucide.createIcons();
 }
 
+// User explicitly clicks next — NO AUTO-ADVANCE!
 window.handleSingleChoice = function(questionId, optionIndex) {
   sound.playClick();
   state.answers[questionId] = optionIndex;
@@ -564,7 +589,6 @@ startBtn.addEventListener('click', startQuiz);
 // 8. Scoring & Diagnosis Algorithm
 // ========================================================
 function calculateResults() {
-  // Sum A: Questions 3, 4, 5 (FOMO / Тревожный радар) - Scale 1..5, Max = 15
   const q3 = Number(state.answers[3]) || 1;
   const q4 = Number(state.answers[4]) || 1;
   const q5 = Number(state.answers[5]) || 1;
@@ -572,7 +596,6 @@ function calculateResults() {
   const isHighA = sumA > 10;
   const pctA = Math.round((sumA / 15) * 100);
 
-  // Sum B: Questions 7, 8, 9 (Impulse / Слабый тормоз) - Scale 1..5, Max = 15
   const q7 = Number(state.answers[7]) || 1;
   const q8 = Number(state.answers[8]) || 1;
   const q9 = Number(state.answers[9]) || 1;
@@ -580,7 +603,6 @@ function calculateResults() {
   const isHighB = sumB > 10;
   const pctB = Math.round((sumB / 15) * 100);
 
-  // Sum C: Questions 10, 11, 12 (Autopilot / Автопилот) - Scale 1..6, Max = 18
   const q10 = Number(state.answers[10]) || 1;
   const q11 = Number(state.answers[11]) || 1;
   const q12 = Number(state.answers[12]) || 1;
@@ -588,9 +610,7 @@ function calculateResults() {
   const isHighC = sumC > 12;
   const pctC = Math.round((sumC / 18) * 100);
 
-  // Determine dominant archetype
   let dominantProfileKey = 'mixed';
-
   const triggeredCount = (isHighA ? 1 : 0) + (isHighB ? 1 : 0) + (isHighC ? 1 : 0);
 
   if (triggeredCount === 0) {
@@ -600,7 +620,6 @@ function calculateResults() {
     else if (isHighB) dominantProfileKey = 'brake';
     else if (isHighC) dominantProfileKey = 'autopilot';
   } else {
-    // Multiple conditions triggered -> Pick the highest normalized percentage
     const scores = [
       { key: 'radar', pct: pctA, isHigh: isHighA },
       { key: 'brake', pct: pctB, isHigh: isHighB },
@@ -649,8 +668,49 @@ function getPersonalInsights() {
   };
 }
 
+// Broadcast and store student result into session
+function submitStudentResult(results) {
+  const submission = {
+    name: state.studentName,
+    room: state.roomPin,
+    profileKey: results.dominantKey,
+    fomo: results.metrics.radar.sum,
+    impulse: results.metrics.brake.sum,
+    autopilot: results.metrics.autopilot.sum,
+    willpower: results.personalInsights.willpowerScore,
+    trigger: results.personalInsights.q1,
+    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  };
+
+  // 1. BroadcastChannel (instant live update to host admin tab)
+  if (roomChannel) {
+    roomChannel.postMessage({ type: 'NEW_SUBMISSION', room: state.roomPin, submission });
+  }
+
+  // 2. localStorage sync
+  const key = `mindfocus_room_${state.roomPin}`;
+  let list = [];
+  try {
+    list = JSON.parse(localStorage.getItem(key)) || [];
+  } catch(e) {
+    list = [];
+  }
+  list.unshift(submission);
+  localStorage.setItem(key, JSON.stringify(list));
+
+  // 3. Cloud Firebase sync if URL exists
+  const fbUrl = localStorage.getItem('mindfocus_firebase_url');
+  if (fbUrl) {
+    fetch(`${fbUrl.replace(/\/$/, '')}/rooms/${state.roomPin}/submissions.json`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(submission)
+    }).catch(() => {});
+  }
+}
+
 // ========================================================
-// 9. Render Final Screen
+// 9. Render Final Screen (Diagnosis + Group Analytics)
 // ========================================================
 function finishQuiz() {
   stopTimer();
@@ -662,6 +722,8 @@ function finishQuiz() {
   triggerCelebrationConfetti();
 
   const results = calculateResults();
+  submitStudentResult(results);
+
   const profile = results.profile;
   const m = results.metrics;
   const insights = results.personalInsights;
@@ -684,16 +746,14 @@ function finishQuiz() {
       <!-- Primary Profile Card -->
       <div class="glass-card rounded-3xl p-6 sm:p-10 border shadow-2xl relative overflow-hidden ${profile.bgBorderClass}">
         
-        <!-- Top Badge -->
         <div class="flex items-center justify-between gap-3 mb-4">
           <span class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-bold border ${profile.bgBorderClass}">
             <span class="w-2 h-2 rounded-full animate-pulse" style="background-color: ${profile.accentColor}"></span>
             ${profile.badge}
           </span>
-          <span class="text-xs text-slate-400 font-medium">Персональный разбор</span>
+          <span class="text-xs text-slate-400 font-medium">Для: <strong class="text-indigo-400">${state.studentName}</strong></span>
         </div>
 
-        <!-- Title -->
         <h2 class="text-2xl sm:text-3xl font-extrabold text-white tracking-tight mb-3">
           ${profile.title}
         </h2>
@@ -720,7 +780,7 @@ function finishQuiz() {
           </p>
         </div>
 
-        <!-- Recommendations (3 steps) -->
+        <!-- Recommendations -->
         <div>
           <div class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3 flex items-center gap-1.5">
             <i data-lucide="check-circle" class="w-4 h-4 text-emerald-400"></i>
@@ -737,11 +797,10 @@ function finishQuiz() {
       <div class="glass-card rounded-3xl p-6 sm:p-8 border border-slate-800/80 shadow-xl">
         <div class="flex items-center gap-2 text-sm font-bold text-slate-200 mb-4">
           <i data-lucide="bar-chart-3" class="w-4 h-4 text-indigo-400"></i>
-          <span>Выраженность зон внимания:</span>
+          <span>Твои индивидуальные шкалы внимания:</span>
         </div>
 
         <div class="space-y-4">
-          <!-- Metric 1: FOMO -->
           <div>
             <div class="flex justify-between text-xs font-semibold mb-1.5">
               <span class="text-slate-300 flex items-center gap-1.5">
@@ -754,7 +813,6 @@ function finishQuiz() {
             </div>
           </div>
 
-          <!-- Metric 2: Impulse -->
           <div>
             <div class="flex justify-between text-xs font-semibold mb-1.5">
               <span class="text-slate-300 flex items-center gap-1.5">
@@ -767,7 +825,6 @@ function finishQuiz() {
             </div>
           </div>
 
-          <!-- Metric 3: Autopilot -->
           <div>
             <div class="flex justify-between text-xs font-semibold mb-1.5">
               <span class="text-slate-300 flex items-center gap-1.5">
@@ -782,7 +839,50 @@ function finishQuiz() {
         </div>
       </div>
 
-      <!-- Personalized Trigger & Habit Insights (From Questions 1, 2, 6, 13) -->
+      <!-- GROUP STATISTICS & LIVE CHARTS CARD -->
+      <div class="glass-card rounded-3xl p-6 sm:p-8 border shadow-xl">
+        <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
+          <div>
+            <div class="flex items-center gap-2 text-sm font-bold text-white">
+              <i data-lucide="users" class="w-4 h-4 text-indigo-400"></i>
+              <span>Результаты группы / аудитории</span>
+              <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                Live
+              </span>
+            </div>
+            <p class="text-xs text-slate-400 mt-0.5">Сессия комнаты: <strong class="text-indigo-400">${state.roomPin}</strong></p>
+          </div>
+
+          <!-- Chart Type Pills -->
+          <div class="flex items-center gap-1.5 p-1 rounded-2xl bg-slate-800/40 border border-slate-700/60 text-xs">
+            <button type="button" onclick="setStudentChartType('doughnut')" id="res-chart-pill-doughnut" class="chart-type-pill active px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5">
+              <i data-lucide="pie-chart" class="w-3.5 h-3.5"></i>
+              <span>Круговая</span>
+            </button>
+            <button type="button" onclick="setStudentChartType('bar')" id="res-chart-pill-bar" class="chart-type-pill px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5">
+              <i data-lucide="bar-chart-2" class="w-3.5 h-3.5"></i>
+              <span>Столбчатая</span>
+            </button>
+            <button type="button" onclick="setStudentChartType('radar')" id="res-chart-pill-radar" class="chart-type-pill px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5">
+              <i data-lucide="target" class="w-3.5 h-3.5"></i>
+              <span>Радар</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Canvas -->
+        <div class="relative w-full h-64 sm:h-72 my-2 flex items-center justify-center">
+          <canvas id="student-group-chart"></canvas>
+        </div>
+
+        <!-- Breakdown Badges -->
+        <div id="student-group-breakdown" class="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-3 border-t border-slate-800/60">
+          <!-- Rendered dynamically -->
+        </div>
+      </div>
+
+      <!-- Personalized Trigger & Habit Insights (Questions 1, 2, 6, 13) -->
       <div class="glass-card rounded-3xl p-6 sm:p-8 border border-slate-800/80 shadow-xl">
         <div class="flex items-center gap-2 text-sm font-bold text-slate-200 mb-4">
           <i data-lucide="layers" class="w-4 h-4 text-cyan-400"></i>
@@ -837,6 +937,7 @@ function finishQuiz() {
   `;
 
   lucide.createIcons();
+  renderStudentGroupChart();
 
   // Attach event listeners
   document.getElementById('native-share-btn').addEventListener('click', () => {
@@ -854,12 +955,179 @@ function finishQuiz() {
     retakeQuiz();
   });
 
-  // Scroll to top of results smoothly
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 // ========================================================
-// 10. Share & Clipboard Functions
+// 10. Group Chart.js Controller on Result Screen
+// ========================================================
+window.setStudentChartType = function(type) {
+  currentStudentChartType = type;
+  document.querySelectorAll('#res-chart-pill-doughnut, #res-chart-pill-bar, #res-chart-pill-radar').forEach(b => b.classList.remove('active'));
+  const activeBtn = document.getElementById(`res-chart-pill-${type}`);
+  if (activeBtn) activeBtn.classList.add('active');
+  renderStudentGroupChart();
+};
+
+function renderStudentGroupChart() {
+  const canvas = document.getElementById('student-group-chart');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  if (studentChartInstance) studentChartInstance.destroy();
+
+  const key = `mindfocus_room_${state.roomPin || '582-104'}`;
+  let list = [];
+  try {
+    list = JSON.parse(localStorage.getItem(key)) || [];
+  } catch(e) {
+    list = [];
+  }
+
+  if (list.length === 0) {
+    list = [
+      { profileKey: 'brake', fomo: 8, impulse: 13, autopilot: 10, willpower: 2 },
+      { profileKey: 'radar', fomo: 14, impulse: 7, autopilot: 8, willpower: 3 },
+      { profileKey: 'autopilot', fomo: 6, impulse: 9, autopilot: 16, willpower: 3 },
+      { profileKey: 'mixed', fomo: 8, impulse: 8, autopilot: 9, willpower: 4 }
+    ];
+  }
+
+  const counts = { radar: 0, brake: 0, autopilot: 0, mixed: 0 };
+  let totalFomo = 0, totalImp = 0, totalAuto = 0, totalWill = 0;
+
+  list.forEach(s => {
+    if (counts[s.profileKey] !== undefined) counts[s.profileKey]++;
+    totalFomo += (s.fomo || 5);
+    totalImp += (s.impulse || 5);
+    totalAuto += (s.autopilot || 5);
+    totalWill += (s.willpower || 3);
+  });
+
+  const total = list.length || 1;
+  const isDark = document.documentElement.classList.contains('dark');
+  const textColor = isDark ? '#cbd5e1' : '#1e293b';
+  const gridColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)';
+
+  if (currentStudentChartType === 'doughnut') {
+    studentChartInstance = new Chart(ctx, {
+      type: 'doughnut',
+      data: {
+        labels: ['Тревожный радар', 'Слабый тормоз', 'Автопилот', 'Смешанный'],
+        datasets: [{
+          data: [counts.radar, counts.brake, counts.autopilot, counts.mixed],
+          backgroundColor: ['#ef4444', '#f97316', '#eab308', '#10b981'],
+          borderWidth: 2,
+          borderColor: isDark ? '#0f172a' : '#ffffff',
+          hoverOffset: 6
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: 'bottom', labels: { color: textColor, font: { family: 'Plus Jakarta Sans', weight: '600', size: 11 } } },
+          tooltip: { callbacks: { label: (c) => ` ${c.label}: ${c.raw} чел. (${Math.round((c.raw/total)*100)}%)` } }
+        },
+        cutout: '62%'
+      }
+    });
+  } else if (currentStudentChartType === 'bar') {
+    studentChartInstance = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: ['Тревожный радар', 'Слабый тормоз', 'Автопилот', 'Смешанный'],
+        datasets: [{
+          label: 'Студенты',
+          data: [counts.radar, counts.brake, counts.autopilot, counts.mixed],
+          backgroundColor: ['#ef4444', '#f97316', '#eab308', '#10b981'],
+          borderRadius: 8
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: textColor, font: { family: 'Plus Jakarta Sans', size: 10 } }, grid: { display: false } },
+          y: { ticks: { color: textColor, stepSize: 1 }, grid: { color: gridColor }, beginAtZero: true }
+        }
+      }
+    });
+  } else if (currentStudentChartType === 'radar') {
+    const avgFomo = Math.round((totalFomo / total / 15) * 100);
+    const avgImp = Math.round((totalImp / total / 15) * 100);
+    const avgAuto = Math.round((totalAuto / total / 18) * 100);
+    const avgWill = Math.round((totalWill / total / 5) * 100);
+
+    const myFomo = Math.round(((Number(state.answers[3]||1) + Number(state.answers[4]||1) + Number(state.answers[5]||1)) / 15) * 100);
+    const myImp = Math.round(((Number(state.answers[7]||1) + Number(state.answers[8]||1) + Number(state.answers[9]||1)) / 15) * 100);
+    const myAuto = Math.round(((Number(state.answers[10]||1) + Number(state.answers[11]||1) + Number(state.answers[12]||1)) / 18) * 100);
+    const myWill = Math.round((Number(state.answers[6]||3) / 5) * 100);
+
+    studentChartInstance = new Chart(ctx, {
+      type: 'radar',
+      data: {
+        labels: ['FOMO', 'Импульсивность', 'Автопилот', 'Самоконтроль'],
+        datasets: [
+          {
+            label: 'Твой результат (%)',
+            data: [myFomo, myImp, myAuto, myWill],
+            backgroundColor: 'rgba(99, 102, 241, 0.35)',
+            borderColor: '#6366f1',
+            pointBackgroundColor: '#818cf8',
+            pointBorderColor: '#fff'
+          },
+          {
+            label: 'Среднее по группе (%)',
+            data: [avgFomo, avgImp, avgAuto, avgWill],
+            backgroundColor: 'rgba(16, 185, 129, 0.15)',
+            borderColor: '#10b981',
+            pointBackgroundColor: '#34d399',
+            pointBorderColor: '#fff'
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: 'bottom', labels: { color: textColor, font: { weight: '600' } } } },
+        scales: {
+          r: {
+            angleLines: { color: gridColor },
+            grid: { color: gridColor },
+            pointLabels: { color: textColor, font: { family: 'Plus Jakarta Sans', size: 10, weight: 'bold' } },
+            ticks: { display: false, beginAtZero: true, max: 100 }
+          }
+        }
+      }
+    });
+  }
+
+  const breakdownContainer = document.getElementById('student-group-breakdown');
+  if (breakdownContainer) {
+    breakdownContainer.innerHTML = `
+      <div class="p-2.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-center">
+        <div class="text-[10px] font-bold text-rose-400">Радар</div>
+        <div class="text-sm font-extrabold text-white">${counts.radar} <span class="text-[10px] font-normal text-rose-300">(${Math.round(counts.radar/total*100)}%)</span></div>
+      </div>
+      <div class="p-2.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-center">
+        <div class="text-[10px] font-bold text-amber-400">Тормоз</div>
+        <div class="text-sm font-extrabold text-white">${counts.brake} <span class="text-[10px] font-normal text-amber-300">(${Math.round(counts.brake/total*100)}%)</span></div>
+      </div>
+      <div class="p-2.5 rounded-2xl bg-yellow-500/10 border border-yellow-500/30 text-center">
+        <div class="text-[10px] font-bold text-yellow-400">Автопилот</div>
+        <div class="text-sm font-extrabold text-white">${counts.autopilot} <span class="text-[10px] font-normal text-yellow-300">(${Math.round(counts.autopilot/total*100)}%)</span></div>
+      </div>
+      <div class="p-2.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-center">
+        <div class="text-[10px] font-bold text-emerald-400">Смешанный</div>
+        <div class="text-sm font-extrabold text-white">${counts.mixed} <span class="text-[10px] font-normal text-emerald-300">(${Math.round(counts.mixed/total*100)}%)</span></div>
+      </div>
+    `;
+  }
+}
+
+// ========================================================
+// 11. Share & Clipboard Functions
 // ========================================================
 function generateSummaryText(results) {
   const p = results.profile;
@@ -881,7 +1149,7 @@ async function handleNativeShare(results) {
   const shareData = {
     title: 'Тест: Кто управляет твоим вниманием?',
     text: summary,
-    url: cleanUrl
+    url: `${cleanUrl}?pin=${state.roomPin}`
   };
 
   if (navigator.share) {
@@ -890,19 +1158,16 @@ async function handleNativeShare(results) {
       showToast('Вы успешно поделились результатом!');
       return;
     } catch (err) {
-      if (err.name === 'AbortError') {
-        return; // User canceled the share dialog
-      }
+      if (err.name === 'AbortError') return;
     }
   }
 
-  // Fallback to clipboard copy
   copyResultToClipboard(results);
 }
 
 function copyResultToClipboard(results) {
   const cleanUrl = window.location.href.split('?')[0].split('#')[0];
-  const fullText = generateSummaryText(results) + `\n\n🔗 Пройти тест: ${cleanUrl}`;
+  const fullText = generateSummaryText(results) + `\n\n🔗 Пройти тест в группе: ${cleanUrl}?pin=${state.roomPin}`;
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(fullText).then(() => {
       showToast('Результат и ссылка скопированы в буфер обмена!');
@@ -923,7 +1188,7 @@ function fallbackCopy(text) {
     document.execCommand('copy');
     showToast('Результат и ссылка скопированы!');
   } catch (err) {
-    showToast('Не удалось скопировать. Выделите текст вручную.');
+    showToast('Не удалось скопировать.');
   }
   document.body.removeChild(textarea);
 }
@@ -948,27 +1213,12 @@ function retakeQuiz() {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-// Celebration Confetti
 function triggerCelebrationConfetti() {
   if (typeof confetti === 'function') {
-    confetti({
-      particleCount: 80,
-      spread: 70,
-      origin: { y: 0.6 }
-    });
+    confetti({ particleCount: 80, spread: 70, origin: { y: 0.6 } });
     setTimeout(() => {
-      confetti({
-        particleCount: 50,
-        angle: 60,
-        spread: 55,
-        origin: { x: 0 }
-      });
-      confetti({
-        particleCount: 50,
-        angle: 120,
-        spread: 55,
-        origin: { x: 1 }
-      });
+      confetti({ particleCount: 50, angle: 60, spread: 55, origin: { x: 0 } });
+      confetti({ particleCount: 50, angle: 120, spread: 55, origin: { x: 1 } });
     }, 250);
   }
 }
@@ -976,5 +1226,6 @@ function triggerCelebrationConfetti() {
 // Initialize on Load
 document.addEventListener('DOMContentLoaded', () => {
   applyTheme(state.theme);
+  parseUrlRoomPin();
   lucide.createIcons();
 });
